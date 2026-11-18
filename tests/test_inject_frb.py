@@ -12,13 +12,13 @@ import fil_cut  # noqa: E402
 TSAMP = 128e-6
 
 
-def make_noise_fil(path, nchan=256, nsamp=160000, nbits=8, fch1=1500.0, foff=-1.0, seed=0, sig=None):
+def make_noise_fil(path, nchan=256, nsamp=160000, nbits=8, fch1=1500.0, foff=-1.0, seed=0, sig=None, tsamp=TSAMP):
     rng = np.random.default_rng(seed)
     if sig is None:
         sig = 5 + 10 * np.sin(np.linspace(0, np.pi, nchan)) ** 2   # bandpass non piatto
     items = [("HEADER_START", None), ("source_name", "NOISE"), ("telescope_id", 0), ("machine_id", 0),
              ("data_type", 1), ("fch1", fch1), ("foff", foff), ("nchans", nchan), ("nbits", nbits),
-             ("nifs", 1), ("tstart", 60000.0), ("tsamp", TSAMP), ("HEADER_END", None)]
+             ("nifs", 1), ("tstart", 60000.0), ("tsamp", tsamp), ("HEADER_END", None)]
     with open(path, "wb") as f:
         f.write(fil_cut.write_header(items))
         step = 20000
