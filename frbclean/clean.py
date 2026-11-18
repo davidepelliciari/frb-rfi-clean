@@ -54,6 +54,8 @@ class CleanConfig:
     clip_sigma: float = 3.0       # taglio per media/std clippate
     auto_mask: bool = True        # maschera automatica dei canali
     chan_z: float = 5.0           # soglia (z robusto) per la maschera automatica
+    mask_block: float = 4.0       # durata dei blocchi per le statistiche della maschera [s]
+    mask_stride: int = 4          # un campione ogni mask_stride per le statistiche della maschera
     mask_chans: list = field(default_factory=list)   # canali da mascherare (indici del file)
     cell: float = 0.008           # durata delle celle per il test di varianza [s]
     cell_sigma: float = 6.0       # soglia del test di varianza (sigma robuste)
@@ -65,8 +67,9 @@ class CleanConfig:
     protect: bool = True          # veto di dispersione prima di sostituire eventi su molti canali
     protect_frac: float = 0.02    # frazione minima di canali anomali in un intervallo per applicare il veto
     protect_dm_min: float = 15.0  # DM minimo considerato "disperso"
-    protect_dm_max: float = 1500.0
-    protect_res: float = 0.00025  # risoluzione temporale del veto [s]
+    protect_dm_max: float = 1000.0
+    protect_res: float = 0.0005   # risoluzione temporale del veto [s]
+    protect_step: float = 4.0     # passo della griglia di DM, in bin di risoluzione di sweep
     protect_ratio: float = 1.2    # protegge se S/N(DM migliore) >= ratio * S/N(DM 0) ...
     protect_snr: float = 7.0      # ... e S/N(DM migliore) >= protect_snr
     changepoints: bool = True     # individua i salti di livello e non mediare a cavallo di essi
@@ -218,6 +221,7 @@ def compute_stats(fb: Filterbank, cfg: CleanConfig, changepoints=None, verbose=T
     kur = np.zeros((nwin, fb.nchans), np.float32)
     ouf = np.zeros((nwin, fb.nchans), np.float32)
     t0 = time.time()
+    blk = dict(std=[], kurt=[], outfrac=[])     # statistiche per blocco di lettura (~4 s), per la maschera
     per_read = max(wlen, 2 ** 26 // max(1, fb.bytes_per_samp))
     w = 0
     while w < nwin:
@@ -227,6 +231,9 @@ def compute_stats(fb: Filterbank, cfg: CleanConfig, changepoints=None, verbose=T
             w1 += 1
         w1 = max(w1, w + 1)
         raw = fb.read(r0, wins[w1 - 1, 1] - r0)
+        nbm = max(64, int(round(cfg.mask_block / ts)))
+        for a0 in range(0, raw.shape[0], nbm):
+            _block_moments(raw[a0:a0 + nbm:cfg.mask_stride], blk)
         for k in range(w, w1):
             a, b = wins[k] - r0
             step = max(1, (b - a) // cfg.stat_nmax) if cfg.stat_nmax else cfg.stat_step
@@ -249,7 +256,36 @@ def compute_stats(fb: Filterbank, cfg: CleanConfig, changepoints=None, verbose=T
                 sca[sel] = median_filter(sca[sel], size=(span, 1), mode="nearest")
     centers = wins.mean(1)
     return dict(loc=loc, scale=sca, kurt=kur, outfrac=ouf, centers=centers, wins=wins, segs=segs,
-                seg_edges=seg_edges, changepoints=cps)
+                seg_edges=seg_edges, changepoints=cps,
+                blk_std=np.array(blk["std"]), blk_kurt=np.array(blk["kurt"]), blk_outfrac=np.array(blk["outfrac"]))
+
+
+def _block_moments(raw, blk):
+    """Deviazione standard, kurtosis e frazione di outlier su TUTTI i campioni del blocco (come il survey)."""
+    n = raw.shape[0]
+    if n < 64:
+        return
+    sub = raw[:: max(1, n // 8192)].astype(np.float32)
+    c = sub.mean(0)
+    med = np.median(sub, 0)
+    mad = MAD2SIG * np.median(np.abs(sub - med), 0)
+    s1 = np.zeros(raw.shape[1]); s2 = np.zeros_like(s1); s3 = np.zeros_like(s1); s4 = np.zeros_like(s1)
+    nout = np.zeros_like(s1)
+    for a in range(0, n, 32768):
+        x = raw[a:a + 32768].astype(np.float32)
+        y = x - c
+        y2 = y * y
+        s1 += y.sum(0, dtype=np.float64); s2 += y2.sum(0, dtype=np.float64)
+        s3 += (y2 * y).sum(0, dtype=np.float64); s4 += (y2 * y2).sum(0, dtype=np.float64)
+        sc = np.where(mad > 0, mad, 1.0)
+        nout += (np.abs(x - med) > 6 * sc).sum(0)
+    mu = s1 / n
+    var = np.maximum(s2 / n - mu * mu, 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        m4 = s4 / n - 4 * mu * s3 / n + 6 * mu * mu * s2 / n - 3 * mu ** 4
+        kurt = np.where(var > 0, m4 / var ** 2 - 3, 0)
+    blk["std"].append(np.sqrt(var)); blk["kurt"].append(kurt)
+    blk["outfrac"].append(np.where(mad > 0, nout / n, 0))
 
 
 def build_mask(fb: Filterbank, stats: dict, cfg: CleanConfig):
@@ -258,8 +294,12 @@ def build_mask(fb: Filterbank, stats: dict, cfg: CleanConfig):
         if 0 <= c < fb.nchans:
             reasons.setdefault(int(c), []).append("utente")
     if cfg.auto_mask:
-        auto = flag_channels(np.median(stats["scale"], 0), np.median(stats["kurt"], 0),
-                             np.median(stats["outfrac"], 0), cfg.chan_z)
+        if stats["blk_std"].size:
+            auto = flag_channels(np.median(stats["blk_std"], 0), np.median(stats["blk_kurt"], 0),
+                                 np.median(stats["blk_outfrac"], 0), cfg.chan_z)
+        else:
+            auto = flag_channels(np.median(stats["scale"], 0), np.median(stats["kurt"], 0),
+                                 np.median(stats["outfrac"], 0), cfg.chan_z)
         for c, r in auto.items():
             reasons.setdefault(int(c), []).extend(r)
     dead = np.median(stats["scale"], 0) <= 0
@@ -360,8 +400,10 @@ class _DispersionVeto:
         self.dv = max(1, int(round(cfg.protect_res / self.ts)))
         kb = self.KDM * (fb.freqs.min() ** -2 - fmax ** -2)
         self.sw_max = int(np.ceil(kb * cfg.protect_dm_max / self.ts))
-        step = 2 * self.dv * self.ts / kb
-        self.dms = np.arange(cfg.protect_dm_min, cfg.protect_dm_max + step, step)
+        step = cfg.protect_step * self.dv * self.ts / kb
+        # la griglia parte da 0: un segnale e' "disperso" solo se il suo DM migliore e' >= protect_dm_min
+        self.dms = np.arange(0.0, cfg.protect_dm_max + step, step)
+        self.lo = self.dms < cfg.protect_dm_min
         self.shifts = np.round(self.KDM * self.dms[:, None] * (f[None, :] ** -2 - fmax ** -2)
                                / (self.dv * self.ts)).astype(int)
         self.wmax = 32
@@ -412,6 +454,7 @@ class _DispersionVeto:
             i0, i1 = max(0, (a - w0) // self.dv - 4), min(nd, (b - w0) // self.dv + 4)
             snr0 = self._best(Zd[i0:i1].sum(1), sig)[0]
             best, bdm, bpos, bw, bsh = -np.inf, 0.0, 0, 1, None
+            best_lo = snr0
             cols = np.arange(nl)
             for d, sh in enumerate(self.shifts):
                 L = nd - sh.max()
@@ -419,9 +462,11 @@ class _DispersionVeto:
                     continue
                 srs = Zd[sh[None, :] + np.arange(L)[:, None], cols].sum(1)
                 snr_d, p_, w_ = self._best(srs, sig)
-                if snr_d > best:
+                if self.lo[d]:
+                    best_lo = max(best_lo, snr_d)
+                elif snr_d > best:
                     best, bdm, bpos, bw, bsh = snr_d, float(self.dms[d]), p_, w_, sh
-            if best >= self.cfg.protect_snr and best >= self.cfg.protect_ratio * max(snr0, 0):
+            if bsh is not None and best >= self.cfg.protect_snr and best >= self.cfg.protect_ratio * max(best_lo, 0):
                 # celle da salvare: per ogni canale, quelle attraversate dalla traccia dispersa
                 t_ch0 = w0 + (bpos + bsh) * self.dv - off            # inizio, in campioni del blocco
                 t_ch1 = t_ch0 + bw * self.dv
@@ -431,7 +476,8 @@ class _DispersionVeto:
                 for c, a_, b_ in zip(self.live, r0, r1):
                     if b_ > a_:
                         keep.append((c, int(a_), int(b_)))
-                out.append((keep, dict(dm=bdm, snr_dm=float(best), snr_dm0=float(snr0), var_event=vrow,
+                out.append((keep, dict(dm=bdm, snr_dm=float(best), snr_dm0=float(snr0), snr_lowdm=float(best_lo),
+                                       var_event=vrow,
                                        t_top_s=float((w0 - off + bpos * self.dv)))))
         self.time_s += time.time() - t_in
         return out
@@ -547,6 +593,7 @@ def run_clean(path, out, cfg: CleanConfig | None = None, verbose: bool = True, r
         masked_channels={str(k): v for k, v in reasons.items()},
         masked_channel_ranges=[[int(a), int(b)] for a, b in group_ranges(np.flatnonzero(mask).tolist())],
         frac_channels_masked=float(mask.mean()),
+        n_changepoints=int(len(stats["changepoints"])),
         changepoints_s=[float(c * ts) for c in stats["changepoints"]],
         frac_cells_replaced=n_cells_flag / max(1, n_cells),
         frac_rows_replaced=n_rows_flag / max(1, n_rows),
@@ -559,7 +606,7 @@ def run_clean(path, out, cfg: CleanConfig | None = None, verbose: bool = True, r
         runtime_s=time.time() - t_start)
     rpath = Path(report) if report else Path(str(out) + ".clean.json")
     rpath.write_text(json.dumps(summary, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
-    np.savez_compressed(Path(str(rpath).replace(".json", "")).with_suffix(".npz"),
+    np.savez_compressed(str(rpath)[:-5] + ".npz" if str(rpath).endswith(".json") else str(rpath) + ".npz",
                         loc=stats["loc"], scale=stats["scale"], centers_s=stats["centers"] * ts,
                         changepoints_s=stats["changepoints"] * ts,
                         mask=mask, flag_time=ft)
