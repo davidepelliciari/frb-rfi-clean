@@ -1,0 +1,4 @@
+# canali sospetti (indici nell'ordine del file), formato: min max
+110 110
+121 127
+185 185

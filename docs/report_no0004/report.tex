@@ -1,0 +1,893 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[italian]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{fvextra}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{siunitx}
+\sisetup{output-decimal-marker={.}, group-separator={\,}, group-minimum-digits=6, per-mode=symbol, range-phrase={--}, range-units=single}
+\DeclareSIUnit\pc{pc}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{placeins}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,citecolor=blue!50!black]{hyperref}
+\setlist{itemsep=2pt,topsep=4pt}
+\emergencystretch=3em
+\urlstyle{same}
+\newcommand{\dmu}{\si{\pc\per\cubic\centi\metre}}
+\DeclareRobustCommand{\file}[1]{\texttt{\detokenize{#1}}}
+\pdfstringdefDisableCommands{\def\file#1{#1}}
+\makeatletter\newcommand{\tabinput}[1]{\@@input #1 }\makeatother
+\newcommand{\ipotesi}[1]{\textcolor{orange!70!black}{\textbf{[Ipotesi]}} #1}
+
+\title{\textbf{Rimozione degli RFI impulsivi per la ricerca di FRB in banda L}\\[4pt]
+\large Stato dei lavori: strumenti sviluppati e analisi dell'osservazione\\ \file{ag278m_mc_no0004_processed.fil}}
+\author{Progetto \file{frb-rfi-clean}}
+\date{18 novembre 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Questo documento riassume il lavoro svolto finora nel progetto \file{frb-rfi-clean}, il cui obiettivo è
+una pipeline automatica di rimozione delle interferenze radio (RFI) da file SIGPROC filterbank,
+da applicare prima della ricerca di \emph{fast radio burst} (FRB) con Heimdall e FETCH.
+Si descrivono (i) gli strumenti software sviluppati e validati: lettura e taglio di filterbank di grandi
+dimensioni, pianificazione e iniezione di FRB sintetici in un solo passaggio sui dati, censimento
+diagnostico degli RFI; (ii) l'analisi della catena di iniezione preesistente (\file{FRB_injector.py},
+FRBfaker); (iii) i risultati ottenuti sull'osservazione di \SI{1199}{\second} acquisita a Medicina in banda L
+(\SIrange{1382.25}{1446.25}{\mega\hertz}, 256 canali, \SI{16}{\micro\second}).
+In questa osservazione Heimdall (DM \numrange{25}{700}\,\dmu, S/N\,$>$\,8 dopo la selezione DM\,$>$\,28)
+produce 2399 candidati, nessuno dei quali supera la soglia di FETCH (probabilità massima 0.54).
+Il 63\% dei candidati è concentrato in 7 episodi di durata inferiore al secondo; i due episodi più numerosi
+(1081 candidati) coincidono in modo statisticamente significativo con un salto di guadagno a banda larga e
+con un aumento improvviso del rumore nella sottobanda \SIrange{1414}{1418}{\mega\hertz}. Su tutta
+l'osservazione, gli intervalli da \SI{0.25}{\second} in cui uno dei due fenomeni è presente coprono il 39\%
+del tempo e contengono l'87\% dei candidati (77\% escludendo i due episodi principali).
+Si identificano inoltre due sorgenti impulsive con periodo di circa \SI{10}{\second}, compatibili con radar di
+sorveglianza aerea, e periodicità artificiali a \SI{50}{\hertz}, \SI{0.625}{\second} e \SI{0.400}{\second}.
+Ogni numero riportato è prodotto da script inclusi nel repository (Appendice~\ref{app:repro}).
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+% =====================================================================================
+\FloatBarrier
+\section{Obiettivo e impostazione del lavoro}
+\label{sec:intro}
+
+Le osservazioni in banda L (\SI{1.4}{\giga\hertz}) dedicate alla ricerca di FRB sono contaminate da RFI.
+In particolare, gli RFI impulsivi di durata dell'ordine del millisecondo producono candidati nella ricerca
+a singolo impulso e possono nascondere FRB deboli ma sopra soglia. La pipeline di ricerca attuale
+(\file{FRB_HF_Finder.py}: Heimdall + FETCH, Sez.~\ref{sec:pipeline}) non applica alcuna rimozione di RFI prima
+di Heimdall.
+
+L'obiettivo è una pipeline di pulizia che:
+\begin{enumerate}
+  \item funzioni in modo automatico su \emph{qualsiasi} filterbank SIGPROC (bande P, L o altre, qualsiasi
+        campionamento, larghezza di banda e numero di bit), con tutti i parametri espressi in unità fisiche
+        e convertiti a partire dall'header;
+  \item lavori a blocchi, con memoria indipendente dalla dimensione del file (decine di GB);
+  \item produca un filterbank pulito da passare a Heimdall al posto dell'originale;
+  \item sia valutata in modo quantitativo con iniezioni di FRB sintetici: completezza in funzione di
+        S/N, DM e larghezza, numero di falsi positivi prima e dopo FETCH, perdita di S/N degli impulsi veri.
+\end{enumerate}
+
+Il lavoro procede per fasi: (0) censimento degli RFI presenti nei dati, (1) banco di prova con iniezioni,
+(2) pulizia modulare, (3) eventuali stadi a valle. Il presente documento copre la fase 0, gli strumenti della
+fase 1 e la prima analisi dei candidati della pipeline esistente.
+
+\paragraph{Convenzioni.} Le frequenze sono in MHz, i tempi in secondi dall'inizio del file, la misura di
+dispersione (DM) in \dmu. La costante di dispersione usata è $k_{\rm DM}=\SI{4.148808e3}{\second\mega\hertz\squared\per\pc\cubic\centi\metre}$.
+Le affermazioni non verificate direttamente sui dati sono marcate come \ipotesi{}.
+
+% =====================================================================================
+\FloatBarrier
+\section{Dati e configurazione strumentale}
+\label{sec:data}
+
+\begin{table}[ht]
+\centering
+\caption{Parametri dell'header del file analizzato e quantità derivate.}
+\label{tab:setup}
+\begin{tabular}{lp{9.2cm}}
+\toprule
+File & \file{ag278m_mc_no0004_processed.fil} \\
+Sorgente (header) & EP260628C \\
+Canali & 256, $\Delta\nu_{\rm ch}=\SI{0.25}{\mega\hertz}$, ordine decrescente in frequenza (\texttt{foff}\,$<$\,0) \\
+Centro del primo canale & \texttt{fch1} = \SI{1446.125}{\mega\hertz} \\
+Banda (bordi dei canali) & \SIrange{1382.25}{1446.25}{\mega\hertz} (\SI{64}{\mega\hertz}) \\
+Campionamento & $t_{\rm samp}=\SI{16}{\micro\second}$, 8 bit, \texttt{nifs}\,=\,1 \\
+Durata & \SI{1198.9996}{\second} ($7.49\times10^7$ campioni) \\
+Flusso di dati & \SI{16.0}{\mega\byte\per\second} ($\approx$\SI{19}{\giga\byte} per file) \\
+\midrule
+Ritardo dispersivo attraverso la banda & $\Delta t = \SI{0.1879}{\milli\second}\times{\rm DM}$ \\
+\quad DM = 25, 100, 500, 700 & \SI{4.7}{}, \SI{18.8}{}, \SI{94.0}{}, \SI{131.6}{\milli\second} \\
+Smearing intra-canale al centro banda & $\SI{0.73}{\micro\second}\times{\rm DM}$ (\SI{0.37}{\milli\second} a DM 500) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Il ritardo dispersivo tra le frequenze $\nu_1<\nu_2$ (in MHz) è
+\begin{equation}
+  \Delta t = k_{\rm DM}\,{\rm DM}\,\left(\nu_1^{-2}-\nu_2^{-2}\right),
+  \label{eq:delay}
+\end{equation}
+e lo smearing all'interno di un canale di larghezza $\Delta\nu_{\rm ch}$ centrato in $\nu$ è
+$t_{\rm smear}\simeq \num{8.3e3}\,{\rm DM}\,\Delta\nu_{\rm ch}\,\nu^{-3}$\,s.
+
+\paragraph{Conseguenza della banda stretta.} Con soli \SI{64}{\mega\hertz} a \SI{1.4}{\giga\hertz} la
+dispersione attraverso la banda è piccola. Un impulso di larghezza intrinseca $W$ si distingue
+morfologicamente da un impulso non disperso solo se $\Delta t \gtrsim W$, cioè per
+${\rm DM}\gtrsim 2.7,\,5.3,\,27,\,53$ per $W=0.5,\,1,\,5,\,10$\,ms rispettivamente.
+Per questo il filtro a DM nullo classico (sottrazione, campione per campione, della media sui canali)
+sarebbe qui pericoloso: rimuoverebbe gran parte del segnale di FRB larghi qualche millisecondo a DM
+di qualche decina. Ogni criterio basato su ``massima significatività a DM\,0'' deve dipendere dalla larghezza.
+
+% =====================================================================================
+\FloatBarrier
+\section{Strumenti sviluppati}
+\label{sec:tools}
+
+Tutto il codice è nel repository \url{https://github.com/davidepelliciari/frb-rfi-clean}. I prodotti del
+censimento sul file completo sono in \url{https://github.com/davidepelliciari/frb-rfi-data}.
+Le dipendenze sono \texttt{numpy}, \texttt{scipy} e, per i grafici, \texttt{matplotlib}.
+I test automatici (\texttt{pytest}, 26 test) coprono tutti i moduli descritti.
+
+\FloatBarrier
+\subsection{Lettura e taglio dei filterbank}
+
+\begin{itemize}
+  \item \file{tools/fil_cut.py}: legge l'header SIGPROC e taglia intervalli di tempo senza caricare il file in
+    memoria (copia a blocchi da \SI{64}{\mega\byte}). Aggiorna \texttt{tstart} (in MJD) e, se presente,
+    \texttt{nsamples}. Usa solo la libreria standard di Python, quindi si può copiare ed eseguire su qualunque
+    macchina. Comandi: \texttt{info}, \texttt{cut} (inizio o centro + durata), \texttt{sample}
+    ($N$ tagli distribuiti uniformemente).
+  \item \file{frbclean/sigproc.py}: lettura e scrittura a blocchi per qualsiasi \texttt{nbits}
+    $\in\{1,2,4,8,16,32\}$. Per $\texttt{nbits}<8$ si segue la convenzione SIGPROC (primo campione nei bit
+    meno significativi del byte). Gestisce l'opzione \texttt{signed} per i dati a 8 bit.
+\end{itemize}
+
+\FloatBarrier
+\subsection{Iniezione di FRB sintetici}
+\label{sec:inject}
+
+\subsubsection{Analisi della catena preesistente}
+
+La catena in uso è composta da tre livelli: uno script di pianificazione, che genera file \file{.params}
+(una riga per impulso: ToA, S/N, larghezza, DM); \file{FRB_injector.py}, che per ogni impulso chiama
+FRBfaker; e FRBfaker\footnote{\url{https://gitlab.com/houben.ljm/frb-faker}}, che crea il segnale.
+L'analisi del codice ha evidenziato i seguenti punti.
+
+\paragraph{Pianificazione.}
+\begin{itemize}
+  \item La banda usata per calcolare lo sweep (\SIrange{400}{416}{\mega\hertz}) è scritta nel codice: è
+    corretta per la Croce del Nord ma va resa dipendente dal file.
+  \item La funzione di campionamento dei ToA fissa il primo valore a \SI{0.5}{\second} invece che a $D$ e
+    sovrascrive l'ultimo con $L$. Di conseguenza non garantisce la separazione minima né la distribuzione
+    uniforme dichiarata, e se gli impulsi non stanno nell'intervallo ($S<0$) non segnala errori.
+  \item La separazione minima è fissa a \SI{0.2}{\second}, mentre il messaggio stampato parla di
+    $10\,W_{\rm eq}$.
+  \item Non c'è un seme per i numeri casuali, quindi le campagne non sono riproducibili.
+  \item Con passo di S/N minore di 1 i nomi dei file collidono (\texttt{int()} sui bordi del bin).
+  \item Vengono iniettati \emph{tutti} i \file{.params} presenti nella cartella, compresi quelli di campagne
+    precedenti; il default di \texttt{--out} è \texttt{True}; gli errori dell'iniettore non sono controllati.
+  \item Ogni bin di S/N produce una copia completa del filterbank.
+\end{itemize}
+
+\paragraph{\file{FRB_injector.py}.}
+\begin{itemize}
+  \item Il file viene riscritto per intero \emph{per ogni impulso}: con $N$ impulsi e un file da \SI{30}{\giga\byte}
+    sono circa $N\times\SI{30}{\giga\byte}$ di scrittura per ogni file \file{.params}.
+  \item L'esito di FRBfaker non viene controllato. Se l'iniezione dell'impulso $k$ fallisce, il file intermedio
+    $k-1$ viene comunque cancellato (\texttt{rm -rf}) e la catena si interrompe senza errore.
+  \item Nella funzione \texttt{scale\_SNR} il ramo \texttt{box\_est\_amp} confronta la variabile sbagliata
+    (errore a runtime se usato) e manca un ramo di default.
+  \item La correzione $({\rm S/N}-0.52)/0.84$ è una calibrazione empirica, ricavata su dati sintetici a rumore
+    noto, che rende l'S/N di Heimdall uguale a quello richiesto. È una procedura corretta, ma vale per la
+    definizione di S/N di FRBfaker e per il setup su cui è stata misurata (\SI{408}{\mega\hertz}); va
+    rimisurata per altri setup e per altri iniettori.
+\end{itemize}
+
+\paragraph{FRBfaker.} Il modello del segnale è solido: profilo gaussiano, smearing intra-canale, dispersione
+riferita al canale più alto, S/N definito dal boxcar ottimale (\texttt{box\_conv}). Tre limiti sono rilevanti per
+questo progetto:
+\begin{itemize}
+  \item il rumore di riferimento è la deviazione standard semplice della serie dedispersa attorno al burst,
+    che nei dati con RFI è gonfiata, per cui i burst vengono iniettati più brillanti del previsto;
+  \item con dati interi il profilo viene arrotondato a interi \emph{prima} di essere sommato. Un burst debole
+    distribuito su molti canali vale meno di un conteggio per canale e il segnale viene distorto o perso
+    (lo segnala anche il README del progetto);
+  \item la funzione di conversione della dinamica è commentata e non si vede un taglio esplicito ai limiti del
+    tipo dati prima della scrittura. Non è stato verificato se i valori possano ``ripartire'' da zero.
+\end{itemize}
+
+\subsubsection{Nuova pianificazione: \file{injection/plan_injections.py}}
+
+Legge durata e banda dall'header e pone i ToA in
+$[t_{\rm start},\, T - t_{\rm end} - 1.1\,\Delta t({\rm DM}_{\max}) - W_{\max}]$.
+I ToA sono uniformi su tutte le configurazioni con separazione minima $g$: si estraggono $n$ valori uniformi
+ordinati $u_i\in[0,\,L-(n-1)g]$ e si pone $t_i=t_{\rm start}+u_i+i\,g$. Il default è
+$g=\max(\SI{0.2}{\second},\,10\,W_{\max})$ e se gli impulsi non stanno nell'intervallo viene restituito un errore.
+DM, larghezza e S/N si specificano come valore fisso, distribuzione uniforme, log-uniforme o lista.
+Di default tutti gli S/N sono in un unico file (una sola copia del filterbank); la completezza in funzione di S/N
+si ricava poi dal catalogo. Lo script scrive \file{injections.csv} e \file{campaign.json}
+(seme, parametri, banda, durata) e rifiuta cartelle di output non vuote.
+
+\subsubsection{Nuovo iniettore: \file{injection/inject_frb.py}}
+
+Tutti gli impulsi vengono iniettati in \emph{un solo passaggio} a blocchi. Per ogni burst e canale $i$
+(frequenza $\nu_i$, riferimento $\nu_{\rm ref}=\max_i\nu_i$):
+\begin{itemize}
+  \item centro d'arrivo $c_i = {\rm ToA}+k_{\rm DM}\,{\rm DM}\,(\nu_i^{-2}-\nu_{\rm ref}^{-2})$;
+  \item profilo $f_i(t)=\mathcal N(t;\,c_i,\sigma_t)\ast\Pi(t;\,\tau_i)$, convoluzione di una gaussiana
+    ($\sigma_t={\rm FWHM}/2\sqrt{2\ln2}$) con un boxcar \emph{centrato} di durata pari allo smearing
+    $\tau_i$ (opzionale);
+  \item il valore nel campione $k$ è l'integrale esatto sul campione,
+    $p_{ik}=F_i\big((k+1)t_{\rm samp}\big)-F_i\big(k\,t_{\rm samp}\big)$, con la funzione di ripartizione in
+    forma chiusa
+    \begin{equation}
+      F(x)=\frac{G(x+\tau/2)-G(x-\tau/2)}{\tau},\qquad
+      G(y)=y\,\Phi\!\left(\frac{y}{\sigma_t}\right)+\sigma_t\,\phi\!\left(\frac{y}{\sigma_t}\right),
+    \end{equation}
+    dove $\Phi$ e $\phi$ sono la funzione di ripartizione e la densità della normale standard. Per $\tau\to0$ si
+    usa $F=\Phi$;
+  \item spettro $w_i=(\nu_i/\nu_{\rm ref})^{\alpha}\,\exp\!\left[-(\nu_i-\nu_c)^2/2\sigma_\nu^2\right]$
+    (inviluppo opzionale per FRB a banda parziale), normalizzato a media 1 sui canali attivi;
+  \item ampiezza nel canale proporzionale al rumore del canale, $s_{ik}=A\,w_i\,\sigma_i\,p_{ik}$. Un segnale
+    astrofisico segue il guadagno del canale come il rumore; i canali con $\sigma_i=0$ non ricevono segnale.
+    La stima $\sigma_i=1.4826\,{\rm MAD}$ è fatta su \num{4096} campioni attorno al burst.
+\end{itemize}
+
+\paragraph{Definizione di S/N.} Il template per $A=1$ viene dedisperso al DM vero con shift interi, come fa
+Heimdall, e sommato sui canali senza pesi. Detta $s(t)$ la serie risultante,
+\begin{equation}
+  {\rm S/N}_{\rm modello}=\max_{W}\;\frac{\max_t \sum_{j=0}^{W-1}s(t+j)}{\sigma_{\rm TS}\sqrt{W}},
+  \qquad \sigma_{\rm TS}=\Big(\sum_i\sigma_i^2\Big)^{1/2},
+\end{equation}
+e $A$ si sceglie in modo che ${\rm S/N}_{\rm modello}$ sia uguale a quello richiesto. È la definizione
+\texttt{box\_conv} di FRBfaker con una stima del rumore robusta agli RFI. L'opzione
+\texttt{--snr-calib}~$a,b$ applica una calibrazione ${\rm S/N}_{\rm Heimdall}=a\,{\rm S/N}_{\rm modello}+b$
+misurata su dati finti (vedi sotto).
+
+\paragraph{Quantizzazione.} Per dati interi il template viene arrotondato in modo stocastico,
+$\lfloor s_{ik}+u\rfloor$ con $u\sim\mathcal U(0,1)$, che conserva il segnale in media anche quando
+$s_{ik}\ll1$ conteggio. I valori vengono poi tagliati esplicitamente a $[0,2^{n_{\rm bit}}-1]$ e i campioni
+saturati sono contati e riportati nel catalogo. Ogni burst ha un proprio generatore derivato dal seme globale,
+quindi il risultato non dipende dalla dimensione dei blocchi.
+
+\paragraph{Validazione} (rumore sintetico, 256 canali, banda non piatta, 3 realizzazioni indipendenti, 36 burst
+con S/N 15 e 30, DM 300, FWHM \SI{2}{\milli\second}). L'S/N è rimisurato con un rivelatore indipendente:
+dedispersione a shift interi, somma, boxcar, rumore robusto fuori impulso.
+\begin{itemize}
+  \item rapporto S/N misurato/richiesto: $0.997\pm0.009$ (dati a 8 bit) e $0.996\pm0.009$ (float); la dispersione
+    tra burst, 0.054, è quella attesa dal solo rumore di misura ($\approx1/{\rm S/N}$);
+  \item file di output identico byte per byte per dimensioni di blocco da \SI{0.05}{\mega\byte} a \SI{1}{\giga\byte};
+  \item con \num{1024} canali e $\sigma=3$ conteggi (ampiezza per canale $\ll1$), il segnale totale iniettato è
+    conservato entro il 3\% e l'S/N recuperato è $8\pm2$ per un S/N richiesto di 8;
+  \item un burst a banda parziale (\SI{1450}{\mega\hertz}, FWHM \SI{10}{\mega\hertz}) deposita oltre il 90\% del
+    segnale entro \SI{10}{\mega\hertz} dal centro e meno dell'1\% oltre \SI{30}{\mega\hertz};
+  \item prestazioni: 50 burst in un file da \SI{1.6}{\giga\byte} (1024 canali, 8 bit) in \SI{19}{\second} su 4 core.
+\end{itemize}
+
+\paragraph{Calibrazione su Heimdall (non ancora eseguita).} \file{tools/make_noise_fil.py} crea un filterbank di
+solo rumore gaussiano con l'header di un file reale; media e $\sigma$ per canale possono essere stimate dal file
+reale. La procedura prevista è: iniezione di circa 300 burst, esecuzione di Heimdall, associazione con il catalogo
+di verità e fit lineare di ${\rm S/N}_{\rm Heimdall}$ in funzione di ${\rm S/N}_{\rm modello}$.
+
+\FloatBarrier
+\subsection{Censimento degli RFI: \file{tools/rfi_survey.py}}
+\label{sec:survey}
+
+Il censimento legge il file in un solo passaggio, a blocchi di durata
+$T_{\rm b}=\max(\SI{1}{\second},\,128\,W_{\max})$ (\SI{4.19}{\second} per questo setup, con
+$W_{\max}=2^{11}t_{\rm samp}=\SI{32.8}{\milli\second}$).
+
+\paragraph{Statistiche per canale e per blocco.} Media, deviazione standard, asimmetria e kurtosis in eccesso
+sono calcolate in modo esatto, con momenti centrati e accumulati in doppia precisione. Mediana, MAD e frazione di
+campioni oltre $6\sigma_{\rm MAD}$ sono calcolate su un sottocampione di circa \num{8192} campioni per blocco.
+
+\paragraph{Spettri dinamici ridotti.} Media e massimo in circa 2000 intervalli di tempo
+(\SI{0.6}{\second} per il file completo). Nei grafici ogni canale è normalizzato con mediana e deviazione standard
+tipiche; la MAD non è usata perché a 8 bit è quantizzata.
+
+\paragraph{Eventi impulsivi a DM 0.} Le serie a DM nullo sono la somma di tutti i canali e le somme su 16
+sottobande contigue (\SI{4}{\mega\hertz} ciascuna). Per ogni serie:
+\begin{enumerate}
+  \item si sottrae una baseline mobile: mediane su finestre di $L_{\rm b}=8\,W_{\max}=\SI{0.26}{\second}$,
+    interpolate linearmente;
+  \item si calcolano boxcar sovrapposti di larghezza $W=2^k$ campioni, $k=0,\dots,11$
+    (\SIrange{16}{32768}{\micro\second}), tramite somme cumulative;
+  \item ogni serie di boxcar è normalizzata con la propria $\sigma$ robusta (1.4826\,MAD) sul blocco;
+  \item un evento è un intervallo contiguo in cui il massimo tra banda intera e sottobande supera
+    ${\rm S/N}=6$. Gli intervalli che si sovrappongono, anche tra larghezze diverse, vengono uniti tenendo il
+    record più forte;
+  \item per ogni evento si registrano tempo, larghezza, S/N in banda intera, S/N massimo, la serie migliore e le
+    sottobande ``colpite'' (S/N\,$>$\,3 al picco), in ordine di frequenza crescente.
+\end{enumerate}
+Limitazioni: gli eventi a cavallo di due blocchi possono essere spezzati; strutture più larghe di
+$\sim\SI{33}{\milli\second}$ sono in parte assorbite dalla baseline; la normalizzazione robusta per blocco rende
+l'S/N relativo al rumore \emph{effettivo}, che include il rumore rosso (Sez.~\ref{sec:slow}).
+
+\paragraph{Periodicità.} Si analizzano tre serie: la serie a DM 0 a circa \SI{1}{\milli\second}, il ``treno'' di
+tutti gli eventi con S/N\,$\geq$\,6, e il treno dei soli eventi che colpiscono almeno metà delle sottobande.
+Per ciascuna:
+\begin{itemize}
+  \item lo spettro di potenza è normalizzato con una mediana mobile su intervalli logaritmici di almeno 128 bin, e
+    sommato su 8 armoniche;
+  \item poiché per un treno di impulsi stretti tutte le armoniche sono forti, la fondamentale si cerca come il
+    divisore $n\le32$ più grande della frequenza del picco tale che lo spettro \emph{non} sommato a $f/n$ sia
+    almeno il 30\% di quello a $f$ e superi 10;
+  \item per i treni di eventi la frequenza è affinata con il test di Rayleigh,
+    $Z(f)=|\sum_j e^{2\pi i f t_j}|^2/N$, in $\pm2$ bin di Fourier.
+\end{itemize}
+Le ``significatività'' riportate sono indicative, perché assumono un rumore gaussiano bianco.
+
+\paragraph{Canali sospetti.} Un canale viene segnalato se è morto ($\sigma=0$), oppure se ha:
+\begin{itemize}
+  \item deviazione standard anomala rispetto a una mediana mobile su $\sim n_{\rm ch}/32$ canali vicini
+    (z robusto\,$>$\,5 e differenza relativa\,$>$\,10\%);
+  \item kurtosis con z robusto\,$>$\,5;
+  \item frazione di outlier con z robusto\,$>$\,5 e superiore a $10^{-3}$.
+\end{itemize}
+
+\paragraph{Validazione} su un filterbank sintetico con le stesse specifiche (\SI{60}{\second}): un radar a banda
+intera con periodo \SI{4.7}{\second}, impulsi di tipo DME in 20 canali con periodo \SI{37}{\milli\second}, bandpass
+non piatto. Risultati:
+\begin{itemize}
+  \item trovati 12 impulsi radar su 12, con periodo \SI{4.7002}{\second};
+  \item trovato il periodo DME di \SI{0.0370}{\second};
+  \item segnalati esattamente i 20 canali contaminati, senza falsi positivi.
+\end{itemize}
+Altri test automatici verificano impulsi a banda parziale, canali morti e rumorosi, e la lettura a 1, 2 e 4 bit.
+Tempo di calcolo: \SI{23}{\second} per \SI{60}{\second} di dati (4 core); sul cluster di Medicina
+\SI{765}{\second} per l'intero file da \SI{1199}{\second}.
+
+% =====================================================================================
+\FloatBarrier
+\section{Pipeline di ricerca esistente}
+\label{sec:pipeline}
+
+\file{FRB_HF_Finder.py} è stato lanciato con
+\texttt{--telescope MC --dm\_low 25 --dm\_high 700 --boxcar\_max 8192 --snr\_cut 8 --gold\_prob 0.7 --fetch\_model a}
+e senza rimozione di RFI (\texttt{--do\_rfifind NONE}, il default). Il flusso è:
+\begin{enumerate}
+  \item Heimdall con DM \numrange{25}{700}, \texttt{dm\_tol}\,=\,1.001, boxcar fino a 8192 campioni
+    (\SI{131}{\milli\second}), nessun canale escluso; i file \file{.cand} vengono uniti con \texttt{coincidencer};
+  \item \file{csv_from_cand.py} seleziona i candidati con S/N\,$>$\,8 e DM\,$>$\,\texttt{dm\_rfi}\,=\,\texttt{dm\_low}+3\,=\,28
+    e scrive \file{*_all_candidates.csv} (colonne \texttt{snr}, \texttt{width} = $\log_2$ della larghezza in
+    campioni, \texttt{dm}, \texttt{stime});
+  \item \texttt{your\_candmaker} produce i file \file{.h5} e FETCH (modello \texttt{a}) assegna una probabilità
+    (\file{results_a.csv});
+  \item sono ``gold'' i candidati con probabilità\,$\geq$\,0.7, S/N\,$>$\,8 e DM\,$>$\,28
+    (\file{Best_candidates.csv}).
+\end{enumerate}
+La pipeline prevede già un ramo IQRM che produce un nuovo filterbank e lo passa a Heimdall: è il punto in cui si
+inserirà la pulizia sviluppata in questo progetto.
+
+% =====================================================================================
+\FloatBarrier
+\section{Risultati sull'osservazione \file{ag278m_mc_no0004}}
+\label{sec:results}
+
+Le figure~\ref{fig:channels}--\ref{fig:events} sono prodotte da \file{rfi_survey.py} sul file completo; le
+figure~\ref{fig:episodes}--\ref{fig:radar} e tutte le tabelle da \file{docs/report_no0004/analysis.py}.
+
+\FloatBarrier
+\subsection{Canali}
+\label{sec:channels}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.86\textwidth]{fig/survey/channels.png}
+\caption{Statistiche per canale in funzione della frequenza (blocchi da \SI{4.19}{\second}). Linea blu: mediana nel
+tempo; fascia: 10°--90° percentile tra i blocchi; linea nera: massimo tra i blocchi; in rosso i canali segnalati.}
+\label{fig:channels}
+\end{figure}
+
+\begin{table}[ht]
+\centering
+\caption{Canali segnalati dal censimento (indici nell'ordine del file; frequenza del centro del canale).}
+\label{tab:channels}
+\begin{tabular}{rrl}
+\toprule
+Canale & $\nu$ [MHz] & Motivo \\
+\midrule
+\tabinput{tab_channels.tex}
+\bottomrule
+\end{tabular}
+\end{table}
+
+Il risultato è in Tabella~\ref{tab:channels} e Figura~\ref{fig:channels}.
+\begin{itemize}
+  \item \textbf{Canali 121--127} (\SIrange{1414.4}{1415.9}{\mega\hertz}): livello e deviazione standard molto più
+    bassi dei canali vicini (livello da \SI{-12}{} a \SI{-16}{\percent}, deviazione standard da \SI{-37}{} a
+    \SI{-59}{\percent}), ma kurtosis e frazione di outlier tra le più alte della banda: kurtosis fino a $z\approx30$,
+    outlier fino a 0.33\% in mediana e 4.8\% nel blocco peggiore. Lo spettro
+    dinamico dei massimi (Fig.~\ref{fig:dynspec}) mostra attività impulsiva continua in questa zona per tutta
+    l'osservazione. \ipotesi{La forma del bandpass suggerisce un filtraggio a monte di questa porzione di banda.}
+  \item \textbf{Canale 110} (\SI{1418.6}{\mega\hertz}) e la regione fino a \SI{1420}{\mega\hertz}: lampi di outlier
+    fino al 2.4\% in alcuni blocchi; segnale intermittente su scale di secondi visibile nello spettro dinamico medio.
+  \item \textbf{Canale 185} (\SI{1399.9}{\mega\hertz}): kurtosis moderatamente elevata.
+  \item \textbf{La kurtosis in eccesso è positiva in tutti i canali}: mediana 1.41, 10°--90° percentile tra i
+    canali 1.08--1.79; per rumore gaussiano sarebbe 0. I dati non sono gaussiani in nessuna parte della banda. Una
+    varianza che cambia nel tempo all'interno del blocco produce kurtosis positiva ed è coerente con le variazioni
+    di livello descritte nella Sez.~\ref{sec:slow}.
+\end{itemize}
+
+\FloatBarrier
+\subsection{Struttura in segmenti e variazioni lente a banda larga}
+\label{sec:slow}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{fig/survey/dynspec.png}
+\caption{Spettri dinamici ridotti (bin \SI{0.6}{\second}). In alto la media per bin, sensibile alle variazioni
+lente; in basso il massimo per bin, sensibile agli impulsi. Unità: deviazioni standard del singolo campione del
+canale.}
+\label{fig:dynspec}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/survey/zerodm.png}
+\caption{Serie temporale a DM 0 (somma di tutti i canali, media su \SI{1.024}{\milli\second}), ridotta per la
+visualizzazione: fascia = minimo--massimo, linea = mediana.}
+\label{fig:zerodm}
+\end{figure}
+
+\paragraph{Segmenti della banda.} Lo spettro dinamico medio (Fig.~\ref{fig:dynspec}, in alto) mostra che la banda
+si comporta come quattro blocchi:
+\begin{itemize}
+  \item \SIrange{1414}{1438}{\mega\hertz}: lunghi periodi a livello ridotto (indicativamente
+    \SIrange{160}{290}{\second}, \SIrange{570}{620}{\second}, \SIrange{900}{1065}{\second}) con bordi netti in
+    frequenza a 1414 e \SI{1438}{\mega\hertz};
+  \item sotto \SI{1390}{\mega\hertz} e sopra \SI{1438}{\mega\hertz}: oscillazioni continue su scale di secondi;
+  \item \SIrange{1390}{1414}{\mega\hertz}: il segmento più stabile.
+\end{itemize}
+\ipotesi{La struttura riflette il sistema di acquisizione, per esempio sottobande digitali con guadagno o
+riquantizzazione indipendenti. Va verificata con chi conosce il backend di Medicina.}
+
+\paragraph{Rumore comune ai canali.} Nella serie a DM 0 a \SI{1.024}{\milli\second} (64 campioni per bin) la
+deviazione standard misurata dalle differenze tra bin adiacenti, $1.4826\,{\rm MAD}(\Delta)/\sqrt2$, vale 170 conteggi.
+Se i canali fossero indipendenti ci si aspetterebbero
+$(\sum_i\sigma_i^2)^{1/2}/\sqrt{64}=52$ conteggi, usando le deviazioni standard tipiche dei canali. Il rapporto,
+\textbf{3.27}, indica una forte componente di rumore comune a tutti i canali già su scale di millisecondi. La stima
+attesa è conservativa: le $\sigma_i$ includono anche la variabilità lenta entro i blocchi, quindi il vero eccesso
+è almeno questo.
+
+\paragraph{Effetto sulla ricerca a DM bassi.} Alla serie a DM 0 si è sottratta una baseline mobile di
+\SI{2}{\second} (mediana) e si sono calcolati boxcar di 1, 8, 32 e \SI{128}{\milli\second}. La
+Tabella~\ref{tab:red} confronta due normalizzazioni: con il rumore bianco atteso dalle differenze tra bin
+adiacenti, e con la $\sigma$ robusta della serie di boxcar stessa, che è più vicina a ciò che fa Heimdall
+normalizzando con il rumore misurato.
+
+\begin{table}[ht]
+\centering
+\caption{Serie a DM 0 dopo la sottrazione di una baseline mobile di \SI{2}{\second}: frazione del tempo con
+$|{\rm S/N}|>8$ secondo due normalizzazioni, e rapporto tra rumore effettivo e rumore bianco.}
+\label{tab:red}
+\begin{tabular}{rccc}
+\toprule
+Boxcar & $|{\rm S/N}|>8$, rumore bianco & $|{\rm S/N}|>8$, rumore effettivo & $\sigma_{\rm eff}/\sigma_{\rm bianco}$ \\
+\midrule
+\SI{1}{\milli\second}   & 1.8\%  & 0.19\% & 2.4 \\
+\SI{8}{\milli\second}   & 21.1\% & 0.22\% & 6.0 \\
+\SI{32}{\milli\second}  & 48.1\% & 0.07\% & 11.4 \\
+\SI{128}{\milli\second} & 69.9\% & 0.05\% & 21.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Correzione rispetto a un'affermazione fatta durante il lavoro.} Nella discussione preliminare (sui primi
+\SI{120}{\second}) si era indicato che la serie supera S/N 8 per il 20--70\% del tempo: quel valore usa la
+normalizzazione con il rumore bianco. Con la normalizzazione effettiva la frazione scende allo 0.05--0.2\%. Le
+variazioni lente quindi \emph{non} sono di per sé una fonte importante di candidati. Il loro effetto principale è
+un \textbf{aumento del rumore effettivo sui boxcar larghi}, di un fattore 6--21 tra \SI{8}{\milli\second} e
+\SI{128}{\milli\second} rispetto al rumore radiometrico. Questo è una \textbf{perdita di sensibilità} per i burst
+larghi. Il calcolo riguarda la serie a DM 0. Per variazioni comuni a tutti i canali più lente dello sweep, la
+dedispersione a DM di qualche decina non le attenua, quindi l'effetto è atteso anche nelle serie dedisperse a
+DM bassi; questo va verificato.
+
+\FloatBarrier
+\subsection{RFI impulsivo a DM 0}
+\label{sec:impulsive}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/survey/events.png}
+\caption{Eventi impulsivi a DM 0. In alto a sinistra: tempo e larghezza (colore: $\log_{10}$\,S/N; piccolo
+spostamento verticale casuale per leggibilità). In alto a destra: frequenza cumulativa degli eventi oltre un dato
+S/N. In basso a sinistra: frazione di sottobande colpite. In basso a destra: eventi al minuto (bin \SI{20}{\second}).}
+\label{fig:events}
+\end{figure}
+
+\begin{table}[ht]
+\centering
+\caption{Statistiche degli eventi impulsivi a DM 0 sull'intero file.}
+\label{tab:events}
+\small
+\begin{tabular}{lr}
+\toprule
+Eventi totali (S/N\,$\geq$\,6) & \num{45388} (\SI{37.9}{\per\second}) \\
+Frazione del tempo occupata da eventi & 8.9\% \\
+Eventi/ora con S/N\,$\geq$\,6, 8, 10, 20 & \num{136278}, \num{58966}, \num{36189}, \num{16730} \\
+Eventi/ora con S/N\,$\geq$\,50, 100, 1000 & \num{2189}, 33, 0 \\
+Frazione di banda $\leq$25\%, 25--75\%, $>$75\% & \num{29108}, \num{15323}, 957 \\
+Larghezza \SIrange{16}{64}{\micro\second} & \num{25016} \\
+Larghezza \SIrange{0.128}{1.02}{\milli\second} & \num{14421} \\
+Larghezza \SIrange{2.05}{32.8}{\milli\second} & \num{5951} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+L'RFI impulsivo è presente per tutta l'osservazione (Tab.~\ref{tab:events}, Fig.~\ref{fig:events}).
+\begin{itemize}
+  \item La maggioranza degli eventi è stretta in frequenza: il 64\% colpisce al più un quarto delle sottobande. Di
+    questi, il 66\% ha il massimo nella sottobanda \SIrange{1414}{1418}{\mega\hertz} e il 15\% in
+    \SIrange{1390}{1394}{\mega\hertz}.
+  \item Il 2\% degli eventi colpisce oltre il 75\% della banda.
+  \item La frequenza degli eventi cresce nella seconda metà dell'osservazione (\SIrange{800}{1100}{\second}).
+  \item L'S/N massimo a DM 0 è di circa 120: non ci sono impulsi estremamente brillanti.
+\end{itemize}
+
+\FloatBarrier
+\subsection{Sorgenti periodiche di circa 10 s (radar)}
+\label{sec:radar}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/radar.png}
+\caption{Eventi con S/N\,$\geq$\,30 delle due famiglie, in funzione dello scarto dal passaggio previsto con il periodo
+stimato (asse x) e del tempo (asse y). La colonna verticale indica una periodicità stabile per tutta l'osservazione.}
+\label{fig:radar}
+\end{figure}
+
+Gli eventi forti (S/N\,$\geq$\,30) formano due famiglie distinte per la frequenza colpita:
+\begin{description}
+  \item[Famiglia A] eventi che colpiscono almeno il 90\% della banda;
+  \item[Famiglia B] eventi limitati alla metà inferiore della banda (\SIrange{1382}{1414}{\mega\hertz}): almeno 7
+    delle 8 sottobande basse colpite e al più 2 delle 8 alte.
+\end{description}
+Gli eventi entro \SI{1}{\second} l'uno dall'altro sono raggruppati in ``passaggi''. Il periodo è stimato con una
+scansione di Rayleigh sui primi impulsi dei passaggi (\SIrange{5}{15}{\second}), seguita da un fit lineare
+$t=t_0+nP$ dei passaggi coerenti (scarto $<\SI{0.3}{\second}$).
+
+\begin{table}[ht]
+\centering
+\caption{Parametri delle due sorgenti periodiche. L'errore su $P$ è quello formale del fit.}
+\label{tab:radar}
+\begin{tabular}{lcc}
+\toprule
+ & Famiglia A (banda intera) & Famiglia B (metà bassa) \\
+\midrule
+Eventi con S/N\,$\geq$\,30 & 474 & 364 \\
+Passaggi / passaggi coerenti & 214 / 112 & 157 / 84 \\
+Cicli coperti dall'osservazione & 120 & 120 \\
+Periodo $P$ [s] & $9.99924\pm0.00016$ & $9.99598\pm0.00008$ \\
+Fase $t_0$ [s] & 3.636 & 6.158 \\
+Scarto quadratico medio dei passaggi [ms] & 58 & 26 \\
+Impulsi per passaggio (mediana) & 2 & 2 \\
+Spaziatura tra impulsi (mediana) & \SI{38.4}{\milli\second} & \SI{38.5}{\milli\second} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Interpretazione (Tab.~\ref{tab:radar}, Fig.~\ref{fig:radar}):
+\begin{itemize}
+  \item entrambe le famiglie sono presenti per tutti i \SI{1200}{\second}, nel 93\% (A) e nel 70\% (B) dei cicli;
+  \item la differenza tra i periodi, \SI{3.3}{\milli\second}, è formalmente molto significativa. Però gli impulsi
+    sono spaziati di \SI{38}{\milli\second} entro un passaggio, e scegliere il ``primo impulso'' può introdurre
+    errori sistematici non inclusi nell'errore formale. Il risultato è indicativo di due sorgenti distinte, ma non
+    conclusivo;
+  \item circa metà dei passaggi forti della famiglia A non è coerente con il periodo: ci sono altre sorgenti
+    impulsive a banda larga non periodiche;
+  \item \ipotesi{Rotazioni di circa \SI{10}{\second} e la banda \SIrange{1215}{1400}{\mega\hertz} sono tipiche dei
+    radar di sorveglianza aerea a lungo raggio. La famiglia B, confinata sotto \SI{1414}{\mega\hertz}, è compatibile
+    con un radar che opera appena sotto la banda osservata.}
+\end{itemize}
+Nota sullo strumento: la ricerca automatica di periodicità del censimento \emph{non} riporta direttamente i
+\SI{10}{\second}, perché le due famiglie sono diluite tra gli altri eventi; questi risultati derivano dall'analisi
+dedicata descritta sopra, che andrà integrata nello strumento.
+
+\FloatBarrier
+\subsection{Altre periodicità}
+\label{sec:period}
+
+\begin{table}[ht]
+\centering
+\caption{Periodicità principali trovate dal censimento (estratto di \file{periodicity.csv}). ``Armonica'' è la
+frequenza del picco più forte nello spettro sommato; $\sigma$ è la significatività formale (assume rumore bianco
+gaussiano e va letta solo come ordine di grandezza); $Z$ è il test di Rayleigh per i treni di eventi.}
+\label{tab:period}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Serie & $f$ [Hz] & $P$ [s] & Armonica [Hz] & $\sigma$ & $Z$ \\
+\midrule
+\tabinput{tab_periodicity.tex}
+\bottomrule
+\end{tabular}
+\end{table}
+
+Dalla Tabella~\ref{tab:period}:
+\begin{itemize}
+  \item \textbf{\SI{50}{\hertz}} ($P=\SI{0.0200000}{\second}$) è la periodicità dominante sia nella serie a DM 0 sia nei
+    treni di eventi (Rayleigh $Z\approx\numrange{360}{400}$). \ipotesi{Interferenza dalla rete elettrica.}
+  \item Due periodicità sono \textbf{esatte} entro $10^{-6}$ in frazione: \SI{0.625000}{\second} (\SI{1.6}{\hertz}) e
+    \SI{0.400000}{\second} (\SI{2.5}{\hertz}), con armoniche forti a 40 e \SI{75}{\hertz}.
+    \ipotesi{Periodi così stabili indicano sorgenti artificiali agganciate a un riferimento di tempo, oppure un
+    effetto del sistema di acquisizione (per esempio la struttura dei pacchetti).}
+  \item Ci sono altre periodicità di decine di Hz (30, 33.3, 46.875, \SI{66.7}{\hertz} e altre) di origine non
+    determinata.
+\end{itemize}
+
+\FloatBarrier
+\subsection{Candidati di Heimdall e classificazione FETCH}
+\label{sec:cands}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/candidates.png}
+\caption{Candidati di Heimdall dopo la selezione S/N\,$>$\,8, DM\,$>$\,28. In alto: DM e tempo (colore: $\log_2$ della
+larghezza in campioni); in rosso gli episodi con almeno 20 candidati. Al centro: distribuzioni di larghezza, DM e
+S/N. In basso: distribuzione della probabilità FETCH e numero cumulativo di candidati.}
+\label{fig:cands}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{2399 candidati} in \SI{1199}{\second} (\SI{3.99}{}--\SI{1195.17}{\second}), con S/N tra 8.0 e 24.4
+    (mediana 9.4) e DM con percentili 5/25/50/75/95 pari a 30, 40, 93, 184 e 497.
+  \item \textbf{Sono quasi tutti stretti}: l'81\% ha larghezza tra 1 e 8 campioni
+    (\SIrange{16}{128}{\micro\second}); solo 40 sono larghi almeno \SI{4.1}{\milli\second} ($k\geq8$).
+  \item \textbf{FETCH} ha classificato tutti i 2399 candidati: probabilità mediana $4.5\times10^{-8}$, 99° percentile
+    0.007, massimo 0.54. Un solo candidato supera 0.5 e nessuno raggiunge la soglia di 0.7, quindi
+    \file{Best_candidates.csv} è vuoto.
+  \item I cinque candidati più probabili sono larghi 33--\SI{66}{\milli\second}: tre a DM 260.9 (a 827.0, 829.0 e
+    \SI{830.2}{\second}; probabilità 0.19, 0.54, 0.20), uno a \SI{192.7}{\second} (DM 43.9, 0.31) e uno a
+    \SI{738.0}{\second} (DM 94.6, 0.27). La loro natura non è stata ancora esaminata.
+\end{itemize}
+\textbf{Correzione:} in una fase preliminare si era indicato che 58 candidati non avessero un file \file{.h5}.
+Era un errore dell'abbinamento: la coppia (tempo, DM) non è univoca. Con l'abbinamento su (tempo, DM, S/N) tutti
+i candidati risultano classificati.
+
+\FloatBarrier
+\subsection{Episodi di candidati}
+\label{sec:episodes}
+
+Raggruppando i candidati separati da meno di \SI{0.5}{\second}, \textbf{1509 candidati (63\%) cadono in 7 episodi
+di durata inferiore al secondo} (Tab.~\ref{tab:episodes}). Gli altri 890 (44.5 al minuto, larghezza mediana
+$2^3$ campioni, DM mediana 105) formano un fondo diffuso.
+
+\begin{table}[ht]
+\centering
+\caption{Episodi con almeno 20 candidati. $k$: $\log_2$ della larghezza in campioni (mediana). Livello ai bordi e al
+centro: variazione minima/massima, in un intorno di $\pm\SI{1.5}{\second}$, del livello medio delle 4 sottobande ai
+bordi (1382--1390 e \SIrange{1438}{1446}{\mega\hertz}) e delle 12 centrali, rispetto ai \SIrange{2}{6}{\second}
+precedenti. Rumore 1416: massimo, nello stesso intorno, della deviazione standard della sottobanda
+\SIrange{1414}{1418}{\mega\hertz} (bin \SI{0.25}{\second}) rispetto al suo valore tipico. Salto: massima variazione
+del livello ai bordi tra bin consecutivi da \SI{0.25}{\second}. Tra parentesi la probabilità che una finestra
+casuale della stessa durata mostri un valore almeno pari.}
+\label{tab:episodes}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Intervallo [s] & $N$ & DM & $k$ & S/N$_{\max}$ & $P^{\rm FETCH}_{\max}$ & Bordi [\%] & Centro [\%] & Rumore 1416 & Salto [\%] \\
+\midrule
+\tabinput{tab_episodes.tex}
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/episodes_subbands.png}
+\caption{Livello delle 16 sottobande (media su \SI{20}{\milli\second}, normalizzata alla mediana) attorno a quattro
+episodi. I trattini rossi sono i tempi dei candidati di Heimdall; la fascia rosa è l'intervallo dell'episodio.}
+\label{fig:episodes}
+\end{figure}
+
+\paragraph{Episodio a \SI{78}{\second} (270 candidati).} A \SI{77.11}{\second} il livello di tutta la banda scende
+bruscamente: circa \SI{-26}{\percent} nelle sottobande ai bordi e da \SI{-5}{} a \SI{-10}{\percent} al centro
+(Fig.~\ref{fig:episodes}). Il ritorno avviene in due gradini, a \SI{78.03}{\second} e a \SI{79.05}{\second}. I
+candidati iniziano a \SI{78.026}{\second}, in corrispondenza del primo gradino, e terminano a \SI{78.58}{\second}.
+Il salto è significativo ($p<0.01$); il rumore a 1416 MHz non lo è ($p=0.85$). I livelli discreti (circa 0.74 e
+0.93 della mediana ai bordi) fanno pensare a passi discreti di guadagno o di attenuazione. \ipotesi{Un controllo
+automatico del guadagno a gradini.}
+
+\paragraph{Episodio a \SI{197}{\second} (811 candidati).} A \SI{196.85}{\second} il rumore della sottobanda
+\SIrange{1414}{1418}{\mega\hertz} aumenta fino a 25 volte il valore tipico ($p<0.01$). I candidati, larghi un solo
+campione e distribuiti su tutti i DM tra 28 e 699, coincidono con questo intervallo (196.84--\SI{197.10}{\second}).
+A \SI{197.12}{\second} segue un calo di livello di tutta la banda con la stessa forma dell'episodio a
+\SI{78}{\second} (bordi a 0.74), che rientra a \SI{198.05}{\second}. \ipotesi{Il calo di guadagno potrebbe essere
+la reazione di un controllo automatico al lampo di RFI.} Va notato che un secondo intervallo di forte rumore a
+\SI{1416}{\mega\hertz}, tra 197.5 e \SI{198.0}{\second} durante il calo di livello, produce solo un paio di
+candidati: il motivo non è chiarito.
+
+\paragraph{Altri episodi.} Per gli episodi a 99, 604, 965, 1027 e \SI{1065}{\second} i valori massimi di rumore e
+di salto nell'intorno non sono significativi singolarmente ($p$ tra 0.12 e 0.85): la loro origine
+\textbf{non è stabilita} da questa analisi. Gli episodi a 604 e \SI{1027}{\second} mostrano comunque, nella
+Fig.~\ref{fig:episodes}, variazioni di livello di qualche percento e picchi nelle sottobande centrali durante
+l'intervallo.
+
+\FloatBarrier
+\subsection{Associazione statistica tra candidati e disturbi}
+\label{sec:correlation}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/correlation.png}
+\caption{In alto: indicatori per intervalli da \SI{0.25}{\second}, cioè il rumore della sottobanda
+\SIrange{1414}{1418}{\mega\hertz} rispetto al valore tipico e $1+{}$salto di livello ai bordi in percentuale (la
+linea tratteggiata, a 3, corrisponde alle soglie della riga centrale della Tab.~\ref{tab:corr}). In basso:
+candidati di Heimdall per intervallo.}
+\label{fig:corr}
+\end{figure}
+
+L'osservazione è stata divisa in 4798 intervalli da \SI{0.2499}{\second} (244 bin della serie a DM 0) e ogni intervallo è stato classificato con due
+indicatori:
+\begin{description}
+  \item[A] rumore della sottobanda \SIrange{1414}{1418}{\mega\hertz} superiore a $X$ volte il valore tipico;
+  \item[B] salto del livello medio delle sottobande ai bordi, rispetto all'intervallo precedente, superiore a $Y$.
+\end{description}
+
+\begin{table}[ht]
+\centering
+\caption{Frazione del tempo e dei candidati negli intervalli da \SI{0.25}{\second} classificati con gli indicatori A e
+B, per tre coppie di soglie. ``Densità'' è il numero medio di candidati per intervallo diviso per la media su tutto il
+file.}
+\label{tab:corr}
+\small
+\begin{tabular}{rrlrrrr}
+\toprule
+$X$ & $Y$ & Condizione & Tempo & Candidati & Frazione & Densità \\
+\midrule
+\tabinput{tab_correlation.tex}
+\bottomrule
+\end{tabular}
+\end{table}
+
+Con le soglie intermedie ($X=3$, $Y=2\%$), gli intervalli con A oppure B coprono il \textbf{39.4\% del tempo e
+contengono l'87.4\% dei candidati}. Il restante 60.6\% del tempo contiene il 12.6\% dei candidati, con densità 0.21
+volte la media (Tab.~\ref{tab:corr}). L'associazione resta per tutte e tre le coppie di soglie.
+
+Siccome i due episodi a 78 e \SI{197}{\second} pesano molto sul totale (1081 candidati), l'analisi è stata ripetuta
+escludendoli. Con $X=3$, $Y=2\%$: A oppure B copre il 39.4\% del tempo e contiene il \textbf{77.1\%} dei candidati
+rimanenti (densità 1.96); gli intervalli senza A né B contengono il 22.9\% (densità 0.38).
+
+\paragraph{Cautele.}
+\begin{itemize}
+  \item I candidati sono fortemente raggruppati nel tempo, quindi non si può attribuire un valore $p$ semplice a
+    questi rapporti (i conteggi non sono poissoniani).
+  \item Un'associazione non implica un rapporto di causa: A e B potrebbero essere manifestazioni di un fattore
+    comune, per esempio un RFI forte che produce sia il rumore sia la reazione del guadagno.
+  \item Le soglie sono state scelte dopo aver visto i dati; la stabilità rispetto alle tre coppie di soglie riduce,
+    ma non elimina, questo effetto.
+  \item Il riferimento temporale di \texttt{stime} di Heimdall (frequenza di riferimento) non è stato verificato;
+    con bin da \SI{0.25}{\second} e sweep fino a \SI{132}{\milli\second} l'effetto sulla classificazione è al più
+    marginale.
+\end{itemize}
+
+% =====================================================================================
+\FloatBarrier
+\section{Discussione}
+\label{sec:discussion}
+
+\paragraph{Cosa genera i candidati in questa osservazione.} I dati indicano che la maggior parte dei candidati di
+Heimdall \emph{non} è la versione dedispersa di impulsi forti a DM 0: i candidati sono stretti
+(\SIrange{16}{128}{\micro\second}), mentre un impulso non disperso a DM\,$\geq$\,28 verrebbe allargato su
+$\geq\SI{5}{\milli\second}$. Inoltre nei primi \SI{120}{\second} l'associazione con gli impulsi radar è al livello
+casuale (21\% contro 22\%). L'ipotesi preliminare in questo senso va quindi scartata come spiegazione principale.
+
+I candidati si concentrano invece in brevi intervalli in cui cambiano bruscamente il livello o la varianza dei dati:
+salti di guadagno a banda larga, più forti ai bordi, e lampi di rumore nella zona
+\SIrange{1414}{1418}{\mega\hertz}.
+\ipotesi{Il meccanismo proposto è che Heimdall normalizzi le serie dedisperse con una stima del rumore che non segue
+cambiamenti rapidi della varianza. Per qualche centinaio di millisecondi le normali fluttuazioni producono S/N\,$>$\,8
+a molti DM e con larghezze piccole.} L'ipotesi è coerente con l'episodio a \SI{197}{\second} (811 candidati larghi
+un campione a tutti i DM), ma non è verificata direttamente sul codice di Heimdall.
+
+\paragraph{Implicazioni per la pulizia.} In ordine di impatto atteso:
+\begin{enumerate}
+  \item \textbf{Mascherare i canali 121--127}, oltre a 110 e 185, che concentrano l'attività impulsiva della zona
+    \SIrange{1414}{1418}{\mega\hertz}.
+  \item \textbf{Normalizzare ogni canale con media e deviazione standard mobili} su scale di
+    \SIrange{0.1}{0.5}{\second}, con stime robuste agli impulsi. I salti di guadagno sono più forti ai bordi, quindi
+    vanno trattati come moltiplicativi e canale per canale.
+  \item \textbf{Riconoscere e sostituire i tratti con varianza anomala.}
+  \item \textbf{Rimuovere gli impulsi forti a DM 0} (radar), con un veto sulla dispersione che dipenda dalla larghezza
+    (Sez.~\ref{sec:data}). In questa osservazione sembra meno rilevante per il numero di candidati.
+\end{enumerate}
+Inoltre la Tabella~\ref{tab:red} indica che il rumore effettivo sui boxcar larghi è molto superiore a quello
+radiometrico. Una normalizzazione efficace delle variazioni lente potrebbe quindi migliorare anche la
+\emph{sensibilità} ai burst larghi, oltre a ridurre i falsi positivi. Va verificato con le iniezioni.
+
+\paragraph{Limiti di questa analisi.}
+\begin{itemize}
+  \item È stata analizzata una sola osservazione.
+  \item La causa di 5 episodi su 7 non è stabilita.
+  \item L'analisi dei candidati parte dall'output già filtrato (S/N\,$>$\,8, DM\,$>$\,28) e non dai file
+    \file{.cand} completi di Heimdall.
+  \item La calibrazione dell'S/N dell'iniettore su Heimdall non è ancora stata eseguita.
+  \item Nessun burst sintetico è ancora stato iniettato in questi dati, quindi la sensibilità della pipeline attuale
+    non è stata misurata.
+\end{itemize}
+
+% =====================================================================================
+\FloatBarrier
+\section{Prossimi passi}
+\label{sec:next}
+
+\begin{enumerate}
+  \item \textbf{Primo stadio di pulizia} (\file{tools/rfi_clean.py}): maschera dei canali, normalizzazione mobile per
+    canale, sostituzione dei tratti anomali. L'output è un filterbank con lo stesso header, da passare a
+    \file{FRB_HF_Finder.py} come nel ramo IQRM. Confronto del numero e della distribuzione dei candidati con i 2399
+    attuali.
+  \item \textbf{Calibrazione dell'S/N} dell'iniettore su Heimdall con dati finti dello stesso setup.
+  \item \textbf{Campagna di iniezione} sul file originale e sul file pulito: completezza in funzione di S/N, DM e
+    larghezza, e perdita di S/N dovuta alla pulizia.
+  \item \textbf{Strumento \file{cand_vs_survey.py}} che renda automatica l'analisi delle Sez.~\ref{sec:episodes}
+    e~\ref{sec:correlation}.
+  \item \textbf{Migliorare la ricerca di periodicità} nel censimento: folding degli eventi forti separati per tipo
+    (banda intera e gruppi di sottobande), in modo da trovare i radar in automatico.
+  \item \textbf{Analisi dei tagli a piena risoluzione} attorno agli episodi a 78, 197 e \SI{1065}{\second}, e dei
+    candidati a DM 260.9 attorno a \SI{829}{\second}.
+  \item \textbf{Verifica delle ipotesi strumentali} (segmenti della banda, controllo automatico del guadagno) con chi
+    conosce il backend di Medicina.
+  \item \textbf{Estensione ad altre osservazioni} per distinguere le caratteristiche stabili del sito da quelle
+    specifiche di questo file.
+\end{enumerate}
+
+% =====================================================================================
+\appendix
+\FloatBarrier
+\section{Riproducibilità}
+\label{app:repro}
+
+\begin{itemize}
+  \item Codice: \url{https://github.com/davidepelliciari/frb-rfi-clean}. Strumenti in \file{tools/},
+    \file{injection/}, \file{frbclean/}; test in \file{tests/}.
+  \item Censimento sul file completo, eseguito sul cluster di Medicina con i parametri di default:
+\begin{Verbatim}[fontsize=\small,breaklines=true]
+python3 tools/rfi_survey.py ag278m_mc_no0004_processed.fil --out survey_no0004_full/
+\end{Verbatim}
+    I parametri sono riportati nella Tab.~\ref{tab:surveycfg}. Il file \file{survey.npz} è nel repository \url{https://github.com/davidepelliciari/frb-rfi-data},\\
+    cartella \file{surveys/ag278m_mc_no0004_full/}.
+  \item \file{docs/report_no0004/data/} contiene i prodotti tabulari del censimento e i CSV della pipeline di
+    ricerca.
+  \item Figure, tabelle e numeri di questo documento:
+\begin{Verbatim}[fontsize=\small,breaklines=true]
+python3 docs/report_no0004/analysis.py --npz <percorso>/survey.npz
+\end{Verbatim}
+    Lo script scrive \file{fig/}, \file{tab_*.tex} e \file{numbers.json}.
+  \item Validazione dell'iniettore e del censimento: \texttt{python3 -m pytest tests}.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\caption{Parametri del censimento usati per il file completo.}
+\label{tab:surveycfg}
+\begin{tabular}{ll}
+\toprule
+Sottobande & 16 (\SI{4}{\mega\hertz}) \\
+Larghezze dei boxcar & $2^k\,t_{\rm samp}$, $k=0..11$ (\SIrange{0.016}{32.8}{\milli\second}) \\
+Soglia eventi / soglia sottobanda colpita & S/N 6 / S/N 3 \\
+Durata dei blocchi & \SI{4.19}{\second} \\
+Finestra della baseline per gli eventi & \SI{0.26}{\second} \\
+Spettro dinamico ridotto & 2000 bin (\SI{0.6}{\second}) \\
+Serie a DM 0 salvata & \SI{1.024}{\milli\second} \\
+Soglia z per i canali & 5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
