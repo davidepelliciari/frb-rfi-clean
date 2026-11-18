@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frbclean"
+version = "0.1.0"
+description = "RFI excision for transient (FRB) searches in SIGPROC filterbank data"
+requires-python = ">=3.8"
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["frbclean"]
