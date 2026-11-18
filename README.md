@@ -13,7 +13,8 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `injection/inject_frb.py` | iniettore di FRB in un solo passaggio, a blocchi; scrive il catalogo di verità `*.truth.csv` |
 | `tools/rfi_survey.py` | censimento degli RFI (qualsiasi banda, tsamp, nbits 1-32): statistiche per canale, eventi impulsivi a DM 0 in banda intera e sottobande, periodicità (radar, DME), canali sospetti, grafici |
 | `tools/rfi_clean.py` | **primo stadio di pulizia**: maschera dei canali, normalizzazione per canale che segue i salti di guadagno, sostituzione delle celle tempo-frequenza con varianza anomala, veto di dispersione per non toccare i segnali dispersi |
-| `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), pulizia (`clean.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
+| `tools/rfi_periodic.py` | **step 2**: sottrazione canale per canale delle componenti periodiche (default 50 Hz e armoniche) |
+| `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), step 1 (`clean.py`), step 2 (`periodic.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
 | `docs/report_no0004/` | report LaTeX sull'osservazione ag278m_mc_no0004 e script di analisi riproducibile |
 
 Dipendenze: `numpy`, `scipy`, `matplotlib` per i grafici (`pytest` per i test).
@@ -84,3 +85,19 @@ salti di guadagno, lampi di rumore e glitch del tipo osservato in ag278m_mc_no00
 candidati; gli FRB iniettati (0.05-50 ms, S/N 12-1000, DM 30-500) conservano l'S/N entro -6%/+10%
 (il guadagno viene dalla normalizzazione, che dà a tutti i canali lo stesso peso).
 Gli impulsi radar a DM 0 **non** sono ancora rimossi (secondo stadio).
+
+## Step 2: componenti periodiche
+
+```bash
+python3 tools/rfi_periodic.py step1.fil step2.fil            # 50 Hz e armoniche
+python3 tools/rfi_periodic.py step1.fil step2.fil --search   # affina la frequenza per ogni tratto
+```
+
+Per ogni tratto di 10 s e canale si stima il profilo medio su un periodo (64 intervalli di fase,
+media clippata a 4 sigma) e lo si sottrae in base alla fase; vengono rimosse tutte le armoniche
+fino alla 32a. In ag278m_mc_no0004 la componente a 50.0000 Hz (stabile entro 0.001 Hz, quindi
+probabilmente non la rete elettrica) spiega in mediana il 12% della varianza della serie a DM 0 a 1 ms.
+Validazione (`tests/test_periodic.py`): righe a 50/100/150 Hz ridotte da >1000 a <50 volte il fondo;
+nessun effetto su dati senza periodicità; S/N degli FRB uguale a quello dello stesso segnale in dati
+senza modulazione (entro il rumore di misura).
+Riassunto in `step2.fil.periodic.json` (frequenza, ampiezza del profilo e varianza rimossa per tratto).
