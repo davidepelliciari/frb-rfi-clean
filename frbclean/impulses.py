@@ -236,36 +236,57 @@ def _veto(ev, det, geo, cfg):
     jdet = int(np.flatnonzero(cols_all == gdet)[0]) if (gdet >= 0 and not broadband) else None
     p = ev["peak"]
     smear1 = max(geo.smear_sub_min / cfg.dm_min, 1e-6)      # dispersione in una sottobanda per DM unitario [campioni]
-    widths = sorted(w for w in det if w <= 2 * W)
+    # larghezze utili: da W/16 a 2W (anche se il burst vero fosse piu' stretto, a W/16 il guadagno rispetto
+    # a DM 0 e' gia' ampiamente sufficiente per la decisione)
+    widths = sorted(w for w in det if max(1, W // 16) <= w <= 2 * W)
+    # DM plausibili: un evento largo W a DM 0 puo' venire da un burst con dispersione (nella serie in cui e'
+    # visto) al piu' ~2.5 W; oltre, il burst sarebbe stato visto piu' largo
+    # la scala dipende dalla serie in cui l'evento e' visto meglio: banda intera (sweep) o sottobanda
+    per_dm = geo.delay1.max() if ev["col"] == 0 else smear1
+    dm_event = min(cfg.dm_max, cfg.dm_min + 2.5 * W / max(per_dm, 1e-9))
     best_lo, best_hi, bdm, bw = -np.inf, -np.inf, 0.0, 0
     track_frac = 0.0
+    sq = np.sqrt(cols.size)
     for w in widths:
         Z = det[w][0]
         n = Z.shape[0]
         sub = Z[:, 1:]
         stride = max(1, w // 4)
-        dm_cap = cfg.dm_max if w == widths[-1] else min(cfg.dm_max, 4.0 * w / smear1)
+        dm_cap = dm_event if w == widths[-1] else min(dm_event, 4.0 * w / smear1)
         dstep = stride / max(geo.delay1.max(), 1e-9)
-        for dm in np.arange(0.0, dm_cap + dstep, dstep):
-            dall = np.round(dm * geo.delay1[cols_all]).astype(int)
-            d = np.round(dm * geo.delay1[cols]).astype(int)
-            if jdet is not None:
-                lo_t, hi_t = p - dall[jdet] - w, p - dall[jdet] + W
-            else:
-                lo_t, hi_t = p - dall.max() - w, p + W
-            lo_t, hi_t = max(0, lo_t), min(n - 1 - dall.max(), hi_t)
-            if hi_t < lo_t:
-                continue
-            t0 = np.arange(lo_t, hi_t + 1, stride)
-            M = sub[t0[:, None] + d[None, :], cols]
-            tot = M.sum(1)
-            i = int(np.argmax(tot))
-            v = float(tot[i] / np.sqrt(cols.size))
-            if dm < cfg.dm_min:
-                best_lo = max(best_lo, v)
-            elif v > best_hi:
-                best_hi, bdm, bw = v, float(dm), w
-                track_frac = float(np.mean(M[i] > cfg.track_z))
+        dms = np.arange(0.0, dm_cap + dstep, dstep)
+        # tutte le DM e tutti gli istanti di partenza in un'unica operazione vettoriale
+        dall = np.round(dms[:, None] * geo.delay1[cols_all][None, :]).astype(np.int64)    # (nD, nall)
+        d = np.round(dms[:, None] * geo.delay1[cols][None, :]).astype(np.int64)           # (nD, ncols)
+        dmax = dall.max(1)
+        if jdet is not None:
+            lo_t, hi_t = p - dall[:, jdet] - w, p - dall[:, jdet] + W
+        else:
+            lo_t, hi_t = p - dmax - w, p + W
+        lo_t = np.maximum(0, lo_t)
+        hi_t = np.minimum(n - 1 - dmax, hi_t)
+        ok_dm = hi_t >= lo_t
+        if not ok_dm.any():
+            continue
+        dms, d, lo_t, hi_t = dms[ok_dm], d[ok_dm], lo_t[ok_dm], hi_t[ok_dm]
+        nT = int(((hi_t - lo_t) // stride).max()) + 1
+        k = np.arange(nT)
+        t0 = lo_t[:, None] + stride * k[None, :]                                           # (nD, nT)
+        valid = t0 <= hi_t[:, None]
+        t0 = np.where(valid, t0, lo_t[:, None])
+        idx = t0[:, :, None] + d[:, None, :]                                               # (nD, nT, ncols)
+        M = sub[idx, cols[None, None, :]]
+        tot = np.where(valid, M.sum(2), -np.inf) / sq                                      # (nD, nT)
+        per_dm = tot.max(1)
+        lo = dms < cfg.dm_min
+        if lo.any():
+            best_lo = max(best_lo, float(per_dm[lo].max()))
+        if (~lo).any():
+            j = int(np.flatnonzero(~lo)[np.argmax(per_dm[~lo])])
+            if per_dm[j] > best_hi:
+                best_hi, bdm, bw = float(per_dm[j]), float(dms[j]), w
+                i = int(np.argmax(tot[j]))
+                track_frac = float(np.mean(M[j, i] > cfg.track_z))
     # coerenza: lungo la traccia migliore una buona frazione delle sottobande deve mostrare segnale
     # (un FRB e' esteso in frequenza; una traccia che raccoglie poche sottobande molto forti e' di
     # solito un'altra RFI attraversata per caso)
@@ -286,8 +307,9 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
     else:
         lo, hi = (-128, 127) if fb.dtype == np.int8 else (0, 2 ** fb.nbits - 1)
     # canali costanti (mascherati) dal primo blocco lungo
-    probe = fb.read(0, min(nsamp, int(round(cfg.block / ts))))
-    live = probe.min(0) != probe.max(0)
+    probe = fb.read(0, min(nsamp, int(round(cfg.block / ts)))).astype(np.float32)
+    sd = probe.std(0)
+    live = sd > 0.05 * np.median(sd[sd > 0]) if np.any(sd > 0) else sd > 0   # quasi costanti = mascherati
     geo = _Geometry(fb, cfg, live)
     Wmax = 1 << geo.kmax
     nper = max(4 * Wmax, int(round(cfg.block / ts)))
@@ -301,6 +323,8 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
     stats = dict(events=0, removed=0, protected=0, narrow=0, replaced_samples=0)
     protected_list, ev_rows = [], []
     t0 = time.time()
+    last_print = 0.0
+    veto_time = 0.0
     with open(out, "wb") as fo:
         fo.write(write_header(items))
         for c0 in range(0, nsamp, nper):
@@ -318,7 +342,9 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
             out_blk = raw[c0 - e0:c1 - e0].copy()
             for ev in evs:
                 stats["events"] += 1
+                tv = time.time()
                 prot, info = _veto(ev, det, geo, cfg) if cfg.veto else (False, {})
+                veto_time += time.time() - tv
                 if info.get("reason") == "stretto":
                     stats["narrow"] += 1
                 if prot:
@@ -351,13 +377,15 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
                 fo.write(pack_bits(out_blk.astype(np.uint8).ravel(), fb.nbits).tobytes())
             else:
                 fo.write(out_blk.tobytes())
-            if verbose and (c0 // nper) % 25 == 0:
-                print(f"  t={c0 * ts:8.1f} s: eventi {stats['events']}, rimossi {stats['removed']}, "
-                      f"protetti {stats['protected']}  ({time.time() - t0:.0f} s)", flush=True)
+            if verbose and (time.time() - last_print > 30 or c1 >= nsamp):
+                last_print = time.time()
+                print(f"  t={c1 * ts:8.1f} s ({c1 / nsamp * 100:5.1f}%): eventi {stats['events']}, rimossi "
+                      f"{stats['removed']}, protetti {stats['protected']}  ({time.time() - t0:.0f} s, veto "
+                      f"{veto_time:.0f} s)", flush=True)
     frac = stats["replaced_samples"] / max(1, nsamp * int(live.sum()))
     summary = dict(input=str(path), output=str(out), duration_s=nsamp * ts, config=asdict(cfg),
                    n_live_channels=int(live.sum()), **stats, frac_data_replaced=frac,
-                   protected_events=protected_list[:500], runtime_s=time.time() - t_start)
+                   protected_events=protected_list[:500], veto_time_s=veto_time, runtime_s=time.time() - t_start)
     rpath = Path(report) if report else Path(str(out) + ".impulses.json")
     rpath.write_text(json.dumps(summary, indent=2, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
     base = str(rpath)[:-5] if str(rpath).endswith(".json") else str(rpath)
