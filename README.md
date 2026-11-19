@@ -14,6 +14,7 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `tools/rfi_survey.py` | censimento degli RFI (qualsiasi banda, tsamp, nbits 1-32): statistiche per canale, eventi impulsivi a DM 0 in banda intera e sottobande, periodicità (radar, DME), canali sospetti, grafici |
 | `tools/rfi_clean.py` | **primo stadio di pulizia**: maschera dei canali, normalizzazione per canale che segue i salti di guadagno, sostituzione delle celle tempo-frequenza con varianza anomala, veto di dispersione per non toccare i segnali dispersi |
 | `tools/rfi_periodic.py` | **step 2**: sottrazione canale per canale delle componenti periodiche (default 50 Hz e armoniche) |
+| `tools/rfi_impulses.py` | **step 3**: rimozione degli impulsi a DM 0 (radar, impulsi a banda intera o parziale) con veto di dispersione |
 | `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), step 1 (`clean.py`), step 2 (`periodic.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
 | `docs/report_no0004/` | report LaTeX sull'osservazione ag278m_mc_no0004 e script di analisi riproducibile |
 
@@ -127,3 +128,35 @@ sottobande; media degli spettri dei blocchi con finestra di Hann; fino a 2 kHz, 
 con blocchi da 4.19 s) e produce `spectrum.png`, `spectrum_lines.csv` (righe oltre 10 volte il continuo,
 con la famiglia armonica n x f0) e `spectrum.npz`. `compare_spectra.py` sovrappone due spettri, ne fa il
 rapporto e, per ogni riga del primo, riporta la frazione di potenza (sopra il continuo) rimasta nel secondo.
+
+## Step 3: impulsi a DM 0
+
+```bash
+python3 tools/rfi_impulses.py step2.fil step3.fil
+python3 tools/rfi_impulses.py step2.fil step3.fil --thresholds 10 8 6 5
+```
+
+1. **Rivelazione** sulle serie a DM 0 della banda intera e di 16 sottobande, boxcar da 1 campione a
+   32 ms, con **soglia iterativa** (default 8 poi 6): la sigma robusta di ogni serie viene ristimata
+   escludendo i tratti gia' oltre soglia.
+2. **Veto di dispersione** per ogni evento:
+   - un evento piu' stretto di meta' della dispersione a DM 15 nella serie in cui e' visto non puo'
+     essere un FRB a DM >= 15: e' RFI;
+   - altrimenti si cerca una traccia dispersa che passi per l'evento, sommando le serie delle
+     sottobande su una griglia di DM (0-1000) e di larghezze; l'evento e' protetto se il miglior S/N a
+     DM >= 15 supera di 1.05 volte quello a DM < 15, e' almeno 7, e lungo la traccia almeno il 40% delle
+     sottobande ha S/N > 2 (un FRB e' esteso in frequenza; una traccia che raccoglie poche sottobande
+     forti e' un'altra RFI attraversata per caso). Per gli eventi a banda parziale si usano solo le
+     sottobande non colpite.
+3. **Sostituzione** con rumore del solo rettangolo tempo x sottobande colpite; tutti gli altri
+   campioni restano identici all'input.
+
+Prodotti: `step3.fil.impulses.json` (eventi rimossi/protetti, frazione di dati sostituita) e
+`step3.fil.impulses_events.csv`.
+
+Validazione (`tests/test_impulses.py` e griglia DM x larghezza su dati sintetici con radar a banda intera
+e parziale e impulsi stretti): eventi a DM 0 ridotti di circa l'88%, 0.1-0.4% dei dati sostituiti,
+nessuna modifica su rumore puro. **Limite**: un FRB abbastanza brillante da essere visto a DM 0 e'
+protetto se la sua larghezza e' al massimo ~0.7 volte lo sweep del suo DM (con 64 MHz a 1.4 GHz:
+~4 ms a DM 30, tutte le larghezze fino a 16 ms a DM >= 50); oltre, e per DM < 20, puo' essere rimosso.
+Gli FRB deboli, non rivelati a DM 0, non vengono toccati.
