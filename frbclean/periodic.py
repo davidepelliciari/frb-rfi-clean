@@ -64,6 +64,8 @@ class PeriodicConfig:
     protect_dm: float = 2.0
     protect_min_period: float = 0.0015   # periodi piu' corti non vengono testati (non sono pulsar)
     protect_untested: bool = True  # se il test non e' conclusivo, la famiglia non viene sottratta
+    min_period_samples: float = 8.0  # periodo minimo (in campioni) di una famiglia da sottrarre
+    min_power_frac: float = 1e-4   # contributo minimo alla varianza della serie a DM 0
     iterations: int = 2
     dither: bool = True
     seed: int = 0
@@ -268,49 +270,78 @@ def dispersion_test(quart, qfreq, ts, f0, cfg: PeriodicConfig):
 
 
 # =========================================================================== sottrazione
+def _phase_groups(s0, n, ts, f):
+    """Intervalli di fase (uno per campione del periodo) e ordinamento dei campioni per fase."""
+    K = max(2, int(round(1.0 / (f * ts))))
+    t = (s0 + np.arange(n) + 0.5) * ts
+    b = np.minimum((np.mod(t * f, 1.0) * K).astype(np.int64), K - 1)
+    order = np.argsort(b, kind="stable")
+    cnt = np.bincount(b, minlength=K)
+    nz = np.flatnonzero(cnt)
+    starts = np.concatenate([[0], np.cumsum(cnt)])[nz]
+    return b, order, b[order], nz, starts, cnt[nz], K
+
+
 def _subtract_segment(raw, s0, ts, fams, cfg, rng, lo, hi, dtype, nbits):
+    """
+    Sottrazione del profilo medio clippato per ogni famiglia, vettorizzata su gruppi di canali:
+    i campioni vengono ordinati per fase una volta per tratto, e somme, clipping e profilo sono
+    calcolati con np.add.reduceat sugli intervalli di fase.
+    """
     n, nch = raw.shape
     out = np.empty((n, nch), dtype if nbits >= 8 else np.uint8)
     removed_var = []
+    groups = []
+    for fam in fams:
+        f = fam["f_use"]
+        K = max(2, int(round(1.0 / (f * ts))))
+        if abs(1.0 - f * K * ts) * n < 0.3:
+            # periodo = K campioni esatti (entro 0.3 campioni sul tratto): raggruppamento con reshape
+            ph0 = int(np.floor(np.mod((s0 + 0.5) * ts * f, 1.0) * K)) % K
+            ncyc = int(np.ceil((ph0 + n) / K))
+            valid = np.zeros(ncyc * K, bool)
+            valid[ph0:ph0 + n] = True
+            groups.append(("exact", K, ph0, ncyc, valid.reshape(ncyc, K)))
+        else:
+            groups.append(("general",) + _phase_groups(s0, n, ts, f))
     for g0 in range(0, nch, cfg.chan_group):
         g1 = min(nch, g0 + cfg.chan_group)
         x = raw[:, g0:g1].astype(np.float32)
         v0 = x[::8].var(0)
-        for fam in fams:
-            f = fam["f_use"]
-            K = max(2, int(round(1.0 / (f * ts))))
-            exact = abs(1.0 - f * K * ts) * n < 0.3
-            if exact:
-                # periodo = K campioni esatti: raggruppamento con reshape (veloce)
-                ph0 = int(np.floor(np.mod((s0 + 0.5) * ts * f, 1.0) * K)) % K
-                pad0 = ph0
-                ncyc = int(np.ceil((pad0 + n) / K))
-                buf = np.full((ncyc * K, g1 - g0), np.nan, np.float32)
-                buf[pad0:pad0 + n] = x
+        for grp in groups:
+            if grp[0] == "exact":
+                _, K, ph0, ncyc, V = grp
+                buf = np.zeros((ncyc * K, g1 - g0), np.float32)
+                buf[ph0:ph0 + n] = x
                 A = buf.reshape(ncyc, K, g1 - g0)
-                with np.errstate(invalid="ignore"):
-                    m = np.nanmean(A, 0)
-                    sd = np.nanstd(A, 0)
-                    sd[~(sd > 0)] = np.inf
-                    ok = np.abs(A - m[None]) <= cfg.clip * sd[None]
-                    T = np.nansum(np.where(ok, A, 0), 0) / np.maximum(ok.sum(0), 1)
-                T = np.where(np.isfinite(T), T, 0)
+                Vf = V[:, :, None]
+                c = np.maximum(V.sum(0), 1)[:, None].astype(np.float32)
+                m = A.sum(0) / c
+                sd = np.sqrt(np.maximum((A * A).sum(0) / c - m * m, 0))
+                sd[sd <= 0] = np.inf
+                ok = (np.abs(A - m[None]) <= cfg.clip * sd[None]) & Vf
+                T = (A * ok).sum(0) / np.maximum(ok.sum(0), 1)
                 T -= T.mean(0, keepdims=True)
                 A -= T[None]
-                x = buf[pad0:pad0 + n].copy()
-            else:
-                t = (s0 + np.arange(n) + 0.5) * ts
-                b = np.minimum((np.mod(t * f, 1.0) * K).astype(np.int64), K - 1)
-                cnt = np.maximum(np.bincount(b, minlength=K), 1)
-                for j in range(g1 - g0):
-                    col = np.ascontiguousarray(x[:, j], dtype=np.float64)
-                    m = np.bincount(b, col, K) / cnt
-                    sd = np.sqrt(np.maximum(np.bincount(b, col * col, K) / cnt - m * m, 0))
-                    sd[sd <= 0] = np.inf
-                    okc = np.abs(col - m[b]) <= cfg.clip * sd[b]
-                    T = np.bincount(b, col * okc, K) / np.maximum(np.bincount(b, okc.astype(float), K), 1)
-                    T -= T.mean()
-                    x[:, j] = col - T[b]
+                x = buf[ph0:ph0 + n].copy()
+                continue
+            _, b, order, bs, nz, starts, cnt, K = grp
+            xs = x[order]                                         # campioni ordinati per fase
+            c = cnt[:, None].astype(np.float64)
+            S1 = np.add.reduceat(xs, starts, axis=0, dtype=np.float64)
+            S2 = np.add.reduceat(xs * xs, starts, axis=0, dtype=np.float64)
+            m = S1 / c
+            sd = np.sqrt(np.maximum(S2 / c - m * m, 0))
+            sd[sd <= 0] = np.inf
+            pos = np.searchsorted(nz, bs)                         # indice dell'intervallo per ogni campione ordinato
+            ok = np.abs(xs - m[pos].astype(np.float32)) <= (cfg.clip * sd[pos]).astype(np.float32)
+            Sc = np.add.reduceat(np.where(ok, xs, 0), starts, axis=0, dtype=np.float64)
+            Nc = np.add.reduceat(ok, starts, axis=0, dtype=np.float64)
+            T = np.where(Nc > 0, Sc / np.maximum(Nc, 1), m)
+            T -= T.mean(0, keepdims=True)
+            Tfull = np.zeros((K, g1 - g0), np.float32)
+            Tfull[nz] = T
+            x -= Tfull[b]
         v1 = x[::8].var(0)
         live = v0 > 0
         if live.any():
@@ -363,8 +394,26 @@ def _families_for(an, cfg, verbose, manual=None):
         fams = [dict(f0_hz=float(x), n_lines=None, manual=True) for x in manual]
     else:
         fams = find_families(lines, df, f[-1], cfg)
+    tot_var = float(np.sum(psd[1:]) * df)
+    cont = continuum(psd, df)
     for fam in fams:
         fu = fam["f0_hz"]
+        # contributo della famiglia alla varianza della serie a DM 0 (potenza delle righe sopra il continuo)
+        nh = np.arange(1, int(f[-1] / fu) + 1)
+        ib = np.clip(np.round(nh * fu / df).astype(int), 1, psd.size - 2)
+        exc = sum(float(np.maximum(psd[i - 1:i + 2] - cont[i - 1:i + 2], 0).sum()) for i in ib) * df
+        fam["power_frac"] = exc / tot_var if tot_var > 0 else 0.0
+        fam["period_samples"] = 1.0 / (fu * an["ts"])
+        skip = None
+        if fam["period_samples"] < cfg.min_period_samples:
+            skip = f"periodo di {fam['period_samples']:.1f} campioni (< {cfg.min_period_samples})"
+        elif fam["power_frac"] < cfg.min_power_frac:
+            skip = f"contributo trascurabile ({fam['power_frac']:.1e} della varianza)"
+        if skip and not fam.get("manual"):
+            fam.update(f_use=fu, protected=True, skipped=skip)
+            if verbose:
+                print(f"  famiglia f0 = {fu:.6f} Hz: ignorata, {skip}", flush=True)
+            continue
         if cfg.refine:
             fu, rinfo = refine_frequency(an["full"], an["ts"], fu, cfg, df=an["f"][1] - an["f"][0],
                                          n_max=fam.get("n_max") or 1)
@@ -380,7 +429,7 @@ def _families_for(an, cfg, verbose, manual=None):
             fam["protected"] = False
         if verbose:
             if not fam["protected"]:
-                st = "da sottrarre"
+                st = f"da sottrarre (circa {fam['power_frac'] * 100:.2f}% della varianza a DM 0)"
             elif fam.get("dispersion", {}).get("tested"):
                 st = "PROTETTA (segnale disperso, possibile pulsar)"
             else:
