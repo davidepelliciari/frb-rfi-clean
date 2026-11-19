@@ -111,7 +111,7 @@ class SurveyConfig:
     max_runs: int = 20000        # massimo numero di eventi per livello e per blocco
     chan_z: float = 5.0          # soglia (z robusto) per segnalare canali sospetti
     spectrum: bool = False       # calcola lo spettro di potenza della serie a DM 0 e le righe
-    spectrum_fmax: float = 2000.0  # frequenza massima dello spettro [Hz]
+    spectrum_fmax: float | None = None  # frequenza massima dello spettro [Hz]; None = Nyquist nativo (nessun aliasing)
     spectrum_thresh: float = 10.0  # soglia (spettro/continuo) per le righe
 
 
@@ -374,7 +374,7 @@ def run_survey(path, outdir, cfg: SurveyConfig | None = None, plot: bool = True,
     spec = None
     if cfg.spectrum:
         from .spectrum import SpectrumAccumulator
-        spec = SpectrumAccumulator(ts, 1 + nsub, cfg.spectrum_fmax)
+        spec = SpectrumAccumulator(ts, 1 + nsub, cfg.spectrum_fmax or 0.5 / ts)
 
     for ib, (s0, raw) in enumerate(fb.blocks(nper, 0, nsamp)):
         n = raw.shape[0]

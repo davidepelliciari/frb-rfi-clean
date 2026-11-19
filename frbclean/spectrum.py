@@ -2,8 +2,10 @@
 Spettro di potenza delle serie a DM 0 (banda intera e sottobande) e individuazione delle righe.
 
 Metodo: media degli spettri (Welch) di segmenti di durata fissa (i blocchi del survey), con
-finestra di Hann, dopo aver sommato r campioni consecutivi in modo che la frequenza di Nyquist
-sia appena sopra fmax. La densita' spettrale e' in (unita' dei dati)^2 / Hz.
+finestra di Hann. Con fmax < Nyquist nativo si sommano r campioni consecutivi: e' un filtro
+anti-aliasing scadente, e righe sopra la nuova Nyquist ricadono nello spettro come righe fittizie
+(in ag278m_mc_no0004 le armoniche alte di 50 Hz producevano una falsa famiglia a 166.67 Hz).
+Per questo il default del survey e' la risoluzione nativa. Densita' spettrale in (unita')^2 / Hz.
 
 Righe: il "continuo" e' la mediana mobile dello spettro su `cont_hz` Hz; una riga e' un massimo
 locale del rapporto spettro/continuo oltre `thresh`. Ogni riga viene attribuita, se possibile,
@@ -18,7 +20,7 @@ from scipy.ndimage import median_filter
 
 
 class SpectrumAccumulator:
-    def __init__(self, ts: float, nseries: int, fmax: float = 2000.0):
+    def __init__(self, ts: float, nseries: int, fmax: float):
         self.ts = ts
         self.r = max(1, int(np.floor(1.0 / (2.0 * fmax * ts))))
         self.dt = self.r * ts

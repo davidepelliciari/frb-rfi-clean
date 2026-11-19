@@ -308,6 +308,7 @@ def _subtract_segment(raw, s0, ts, fams, cfg, rng, lo, hi, dtype, nbits):
         g1 = min(nch, g0 + cfg.chan_group)
         x = raw[:, g0:g1].astype(np.float32)
         v0 = x[::8].var(0)
+        const = x.min(0) == x.max(0)                           # canali costanti (es. mascherati): non si toccano
         for grp in groups:
             if grp[0] == "exact":
                 _, K, ph0, ncyc, V = grp
@@ -322,6 +323,7 @@ def _subtract_segment(raw, s0, ts, fams, cfg, rng, lo, hi, dtype, nbits):
                 ok = (np.abs(A - m[None]) <= cfg.clip * sd[None]) & Vf
                 T = (A * ok).sum(0) / np.maximum(ok.sum(0), 1)
                 T -= T.mean(0, keepdims=True)
+                T[:, const] = 0
                 A -= T[None]
                 x = buf[ph0:ph0 + n].copy()
                 continue
@@ -339,6 +341,7 @@ def _subtract_segment(raw, s0, ts, fams, cfg, rng, lo, hi, dtype, nbits):
             Nc = np.add.reduceat(ok, starts, axis=0, dtype=np.float64)
             T = np.where(Nc > 0, Sc / np.maximum(Nc, 1), m)
             T -= T.mean(0, keepdims=True)
+            T[:, const] = 0
             Tfull = np.zeros((K, g1 - g0), np.float32)
             Tfull[nz] = T
             x -= Tfull[b]
@@ -350,6 +353,7 @@ def _subtract_segment(raw, s0, ts, fams, cfg, rng, lo, hi, dtype, nbits):
             out[:, g0:g1] = x
         else:
             y = np.floor(x + rng.random(x.shape, dtype=np.float32)) if cfg.dither else np.rint(x)
+            y[:, const] = raw[:, g0:g1][:, const]
             out[:, g0:g1] = np.clip(y, lo, hi)
     return out, (float(np.median(removed_var)) if removed_var else 0.0)
 

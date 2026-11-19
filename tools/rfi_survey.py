@@ -30,7 +30,8 @@ def main(argv=None):
     p.add_argument("--tmax", type=float, default=None, help="analizza solo i primi TMAX secondi")
     p.add_argument("--spectrum", action="store_true",
                    help="calcola lo spettro di potenza della serie a DM 0 (righe periodiche): spectrum.png/.csv/.npz")
-    p.add_argument("--spectrum-fmax", type=float, default=d.spectrum_fmax, help=f"frequenza massima dello spettro [Hz] (default {d.spectrum_fmax})")
+    p.add_argument("--spectrum-fmax", type=float, default=d.spectrum_fmax, help="frequenza massima dello spettro [Hz] (default: Nyquist nativo, nessun aliasing; valori piu' bassi "
+                        "sommano campioni e possono creare righe fittizie)")
     p.add_argument("--no-plots", action="store_true")
     p.add_argument("-q", "--quiet", action="store_true")
     a = p.parse_args(argv)
