@@ -15,6 +15,7 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `tools/rfi_clean.py` | **primo stadio di pulizia**: maschera dei canali, normalizzazione per canale che segue i salti di guadagno, sostituzione delle celle tempo-frequenza con varianza anomala, veto di dispersione per non toccare i segnali dispersi |
 | `tools/rfi_periodic.py` | **step 2**: sottrazione canale per canale delle componenti periodiche (default 50 Hz e armoniche) |
 | `tools/rfi_impulses.py` | **step 3**: rimozione degli impulsi a DM 0 (radar, impulsi a banda intera o parziale) con veto di dispersione |
+| `tools/plot_cand.py` | ispezione di un candidato dal filterbank (profilo, spettri dinamici dedisperso e a DM 0, piano DM-tempo), anche su piu' file affiancati |
 | `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), step 1 (`clean.py`), step 2 (`periodic.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
 | `docs/report_no0004/` | report LaTeX sull'osservazione ag278m_mc_no0004 e script di analisi riproducibile |
 
