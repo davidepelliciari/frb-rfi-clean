@@ -62,7 +62,7 @@ def test_lines_removed_and_frbs_kept(tmp_path):
     for f in (50, 100, 150):
         assert _line_ratio(dm, f) > 1000
         assert _line_ratio(do, f) < 50
-    assert summ["frac_var_removed_median"] > 0.01
+    assert summ["n_lines_before"] >= 3 and summ["n_lines_after"] == 0
     for t0, dm_, w in ((5.0, 100, 0.002), (12.0, 30, 0.02)):
         W = max(1, int(w / TS))
         a = measure_snr(dr, fr, t0, dm_, W)
@@ -72,13 +72,9 @@ def test_lines_removed_and_frbs_kept(tmp_path):
 
 def test_no_periodicity_no_change(tmp_path):
     _make(tmp_path / "n.fil", None, _burst(8.0, 2.0, 0.005, 50), seed=2)
-    summ = run_periodic(tmp_path / "n.fil", tmp_path / "o.fil", PeriodicConfig(segment=5.0, search=True), verbose=False)
-    assert summ["frac_var_removed_median"] < 0.003
-    f1, d1 = load(tmp_path / "n.fil")
-    f2, d2 = load(tmp_path / "o.fil")
-    W = int(0.005 / TS)
-    assert abs(measure_snr(d2, f2, 8.0, 50, W) / measure_snr(d1, f1, 8.0, 50, W) - 1) < 0.03
-    assert abs(d2.std() - d1.std()) < 0.02
+    summ = run_periodic(tmp_path / "n.fil", tmp_path / "o.fil", PeriodicConfig(segment=5.0), verbose=False)
+    assert [f for f in summ["families"] if not f["protected"]] == []
+    assert (tmp_path / "n.fil").read_bytes() == (tmp_path / "o.fil").read_bytes()
 
 
 def test_subcount_modulation_removed(tmp_path):
@@ -123,3 +119,35 @@ def test_survey_spectrum_and_compare(tmp_path):
     rows = list(_csv.DictReader(open(tmp_path / "cmp" / "compare_lines.csv")))
     strong = [x for x in rows if float(x["ratio_A"]) > 100]
     assert strong and all(float(x["line_power_left"]) < 0.02 for x in strong), rows[:5]
+
+
+def test_two_families_common_fundamental_and_pulsar_protected(tmp_path):
+    """50 Hz + treno di impulsi a 166.67 Hz -> fondamentale comune 16.667 Hz; la pulsar dispersa resta intatta."""
+    import synth_periodic as sp
+    from frbclean.periodic import _fold_long
+    B = ((4.0, 100, 0.002, 1.0), (11.0, 30, 0.02, 0.3))
+    psr = (0.0337, 40, 0.001, 0.4)
+    kw = dict(ts=50e-6, nch=64, dur=16.0, pulsar=psr, bursts=B)
+    sp.make(tmp_path / "rfi.fil", **kw)
+    sp.make(tmp_path / "ref.fil", f50=False, f166=False, **kw)
+    summ = run_periodic(tmp_path / "rfi.fil", tmp_path / "out.fil", PeriodicConfig(), verbose=False)
+    fams = summ["families"]
+    sub = [f for f in fams if not f["protected"]]
+    prot = [f for f in fams if f["protected"]]
+    assert any(abs(f["f_use"] - 50.0 / 3) < 1e-3 for f in sub), fams
+    assert any(abs(f["f_use"] - 1 / 0.0337) < 0.01 and f["dispersion"]["tested"] for f in prot), fams
+    assert summ["n_lines_after"] <= 8
+    fr, dr = load(tmp_path / "ref.fil")
+    fo, do = load(tmp_path / "out.fil")
+    for tb, dm, w, a in B:
+        W = max(1, int(w / 50e-6))
+        assert measure_snr(do, fo, tb, dm, W) / measure_snr(dr, fr, tb, dm, W) > 0.95
+
+    def psr_peak(d, f):
+        freqs = f.h["fch1"] + f.h["foff"] * np.arange(f.h["nchans"])
+        sh = np.round(4.148808e3 * 40 * (freqs ** -2 - freqs.max() ** -2) / f.h["tsamp"]).astype(int)
+        L = d.shape[0] - sh.max()
+        s = sum(d[sh[c]:sh[c] + L, c] for c in range(d.shape[1])).astype(np.float32)
+        p, _ = _fold_long(s, f.h["tsamp"], 1 / 0.0337, int(round(0.0337 / f.h["tsamp"])))
+        return p.max() - np.median(p)
+    assert abs(psr_peak(do, fo) / psr_peak(dr, fr) - 1) < 0.05

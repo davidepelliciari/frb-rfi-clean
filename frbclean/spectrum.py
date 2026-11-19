@@ -78,8 +78,16 @@ def find_lines(f, psd, thresh: float = 10.0, cont_hz: float = 2.0, fmin: float =
             keep.append(i)
         if len(keep) >= nmax:
             break
-    lines = [dict(freq_hz=float(f[i]), ratio=float(ratio[i]), psd=float(psd[i]), continuum=float(cont[i]))
-             for i in keep]
+    lines = []
+    for i in keep:
+        # frequenza interpolata: parabola sul logaritmo della potenza nei tre bin attorno al picco
+        fi = float(f[i])
+        if 0 < i < psd.size - 1 and psd[i - 1] > 0 and psd[i + 1] > 0 and psd[i] > 0:
+            a, b, c = np.log(psd[i - 1]), np.log(psd[i]), np.log(psd[i + 1])
+            den = a - 2 * b + c
+            if den < 0:
+                fi += float(np.clip(0.5 * (a - c) / den, -0.5, 0.5)) * df
+        lines.append(dict(freq_hz=fi, ratio=float(ratio[i]), psd=float(psd[i]), continuum=float(cont[i])))
     # famiglie armoniche: per frequenza crescente, una riga e' l'armonica n di una fondamentale piu' bassa
     # se f = n * f0 entro max(harm_tol * f, (n + 1) * df); altrimenti e' una nuova fondamentale
     fund = []

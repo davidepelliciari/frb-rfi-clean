@@ -86,21 +86,33 @@ candidati; gli FRB iniettati (0.05-50 ms, S/N 12-1000, DM 30-500) conservano l'S
 (il guadagno viene dalla normalizzazione, che dà a tutti i canali lo stesso peso).
 Gli impulsi radar a DM 0 **non** sono ancora rimossi (secondo stadio).
 
-## Step 2: componenti periodiche
+## Step 2: RFI periodico (automatico)
 
 ```bash
-python3 tools/rfi_periodic.py step1.fil step2.fil            # 50 Hz e armoniche
-python3 tools/rfi_periodic.py step1.fil step2.fil --search   # affina la frequenza per ogni tratto
+python3 tools/rfi_periodic.py step1.fil step2.fil              # ricerca automatica
+python3 tools/rfi_periodic.py step1.fil step2.fil --freq 50    # solo le frequenze indicate
 ```
 
-Per ogni tratto di 10 s e canale si stima il profilo medio su un periodo (64 intervalli di fase,
-media clippata a 4 sigma) e lo si sottrae in base alla fase; vengono rimosse tutte le armoniche
-fino alla 32a. In ag278m_mc_no0004 la componente a 50.0000 Hz (stabile entro 0.001 Hz, quindi
-probabilmente non la rete elettrica) spiega in mediana il 12% della varianza della serie a DM 0 a 1 ms.
-Validazione (`tests/test_periodic.py`): righe a 50/100/150 Hz ridotte da >1000 a <50 volte il fondo;
-nessun effetto su dati senza periodicità; S/N degli FRB uguale a quello dello stesso segnale in dati
-senza modulazione (entro il rumore di misura).
-Riassunto in `step2.fil.periodic.json` (frequenza, ampiezza del profilo e varianza rimossa per tratto).
+1. **Analisi**: spettro della serie a DM 0 a risoluzione nativa (fino a Nyquist, senza aliasing),
+   righe oltre 8 volte il continuo (frequenza interpolata), raggruppamento in famiglie armoniche
+   scegliendo la fondamentale che spiega piu' righe oltre il caso (es. 50 Hz e 166.67 Hz -> 16.667 Hz),
+   affinamento della frequenza a stadi (spostamento del profilo piegato nel tempo).
+2. **Test di dispersione**: i 4 quarti di banda vengono piegati e confrontati; una famiglia con
+   ritardi compatibili con DM >= 2 (es. una pulsar) **non viene sottratta**; anche le famiglie per
+   cui il test non e' conclusivo non vengono sottratte (prudenza) e sono segnalate.
+3. **Sottrazione**: per ogni canale e tratto (>= 200 periodi) il profilo medio clippato **a
+   risoluzione nativa** viene sottratto in base alla fase: tutte le armoniche fino a Nyquist, senza
+   creare righe nuove. Arrotondamento stocastico per uscite intere.
+4. **Verifica**: spettro dell'output; se restano famiglie sottraibili si ripete (default 2 iterazioni).
+
+Prodotti: `step2.fil.periodic.json` (righe prima/dopo, famiglie, test di dispersione, decisioni),
+`step2.fil.periodic_spectrum.png` e `.npz` (spettro prima/dopo).
+
+Validazione (`tests/test_periodic.py`): con RFI a 50 Hz e un treno di impulsi a 166.67 Hz viene trovata la
+fondamentale comune 16.667 Hz e restano solo le righe di una pulsar (DM 40) che viene riconosciuta e
+lasciata intatta; gli FRB hanno lo stesso S/N (>= 95%) del file senza RFI; su dati senza periodicita'
+l'output e' identico all'input. Su 60 s con le specifiche di Medicina (256 canali, 16 us): 190 righe
+prima, 0 dopo, 37 s di calcolo.
 
 ### Diagnostica delle righe periodiche
 
