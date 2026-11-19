@@ -37,7 +37,9 @@ class PeriodicConfig:
     search: bool = False          # affina la frequenza per ogni tratto
     search_width: float = 0.05    # semi-ampiezza della ricerca [Hz]
     search_step: float = 0.0005   # passo della ricerca [Hz]
-    sub: int = 65536              # campioni per sotto-blocco nei conteggi (memoria)
+    sub: int = 65536              # campioni per sotto-blocco (memoria)
+    seed: int = 0                 # seme per l'arrotondamento stocastico
+    dither: bool = True           # arrotondamento stocastico per uscite intere (consigliato)
 
 
 def _phase_bins(start: int, n: int, ts: float, f: float, nb: int) -> np.ndarray:
@@ -104,6 +106,7 @@ def run_periodic(path, out, cfg: PeriodicConfig | None = None, verbose=True, rep
     items = [(k, (nsamp if k == "nsamples" else v)) for k, v in fb.items]
     segs = []
     n_sat = 0
+    rng = np.random.default_rng(cfg.seed)
     with open(out, "wb") as fo:
         fo.write(write_header(items))
         for s0 in range(0, nsamp, nseg):
@@ -132,7 +135,10 @@ def run_periodic(path, out, cfg: PeriodicConfig | None = None, verbose=True, rep
             info["frac_var_removed_per_channel"] = float(1 - var_after / var_before) if var_before > 0 else 0.0
             segs.append(info)
             if fb.nbits != 32:
-                y = np.rint(x)
+                # arrotondamento stocastico: la correzione sottratta e' spesso < 1 conteggio per canale
+                # (ma coerente su tutti i canali); un arrotondamento deterministico la cancellerebbe.
+                # In media il valore e' conservato; il rumore aggiunto e' <= 1/4 di conteggio^2.
+                y = np.floor(x + rng.random(x.shape, dtype=np.float32)) if cfg.dither else np.rint(x)
                 n_sat += int(((y < lo) | (y > hi)).sum())
                 y = np.clip(y, lo, hi)
                 if fb.nbits < 8:

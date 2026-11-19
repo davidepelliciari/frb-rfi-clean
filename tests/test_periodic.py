@@ -79,3 +79,25 @@ def test_no_periodicity_no_change(tmp_path):
     W = int(0.005 / TS)
     assert abs(measure_snr(d2, f2, 8.0, 50, W) / measure_snr(d1, f1, 8.0, 50, W) - 1) < 0.03
     assert abs(d2.std() - d1.std()) < 0.02
+
+
+def test_subcount_modulation_removed(tmp_path):
+    """Modulazione realistica: ~0.2 conteggi per canale (0.025 sigma), visibile solo nella somma dei canali."""
+    rng = np.random.default_rng(4)
+    n = int(DUR / TS)
+    t = (np.arange(n) + 0.5) * TS
+    items = [("HEADER_START", None), ("nchans", NCH), ("nbits", 8), ("nifs", 1), ("tsamp", TS), ("fch1", 1446.0),
+             ("foff", -1.0), ("tstart", 60000.0), ("data_type", 1), ("HEADER_END", None)]
+    ph = 2 * np.pi * 50.0 * t
+    w = (np.sin(ph) + 0.8 * np.sin(3 * ph + 2)).astype(np.float32) * 0.25
+    x = 128 + 8 * rng.standard_normal((n, NCH)).astype(np.float32) + w[:, None]
+    with open(tmp_path / "m.fil", "wb") as fo:
+        fo.write(write_header(items))
+        fo.write(np.clip(np.rint(x), 0, 255).astype(np.uint8).tobytes())
+    run_periodic(tmp_path / "m.fil", tmp_path / "o.fil", PeriodicConfig(segment=5.0), verbose=False)
+    _, d1 = load(tmp_path / "m.fil")
+    _, d2 = load(tmp_path / "o.fil")
+    for f in (50, 150):
+        before, after = _line_ratio(d1, f), _line_ratio(d2, f)
+        assert before > 100 and after < 0.05 * before, (f, before, after)
+    assert d2.std() < d1.std() * 1.01
