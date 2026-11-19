@@ -101,3 +101,25 @@ def test_subcount_modulation_removed(tmp_path):
         before, after = _line_ratio(d1, f), _line_ratio(d2, f)
         assert before > 100 and after < 0.05 * before, (f, before, after)
     assert d2.std() < d1.std() * 1.01
+
+
+def test_survey_spectrum_and_compare(tmp_path):
+    """rfi_survey --spectrum trova 50/100/150 Hz come famiglia di 50 Hz; compare_spectra misura la riduzione."""
+    import csv as _csv
+    import subprocess
+    from frbclean.survey import SurveyConfig, run_survey
+    _make(tmp_path / "m.fil", 50.0, None, seed=5)
+    run_periodic(tmp_path / "m.fil", tmp_path / "p.fil", PeriodicConfig(segment=5.0), verbose=False)
+    for name in ("m", "p"):
+        run_survey(tmp_path / f"{name}.fil", tmp_path / f"s_{name}", SurveyConfig(spectrum=True), plot=True, verbose=False)
+    lines = list(_csv.DictReader(open(tmp_path / "s_m" / "spectrum_lines.csv")))
+    fam = {round(float(r["freq_hz"])): (round(float(r["family_f0_hz"])), int(r["harmonic"])) for r in lines}
+    for f, n in ((50, 1), (100, 2), (150, 3)):
+        assert any(abs(k - f) <= 1 and v == (50, n) for k, v in fam.items()), fam
+    assert (tmp_path / "s_m" / "spectrum.png").exists()
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "compare_spectra.py"), str(tmp_path / "s_m"),
+                        str(tmp_path / "s_p"), "--out", str(tmp_path / "cmp")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    rows = list(_csv.DictReader(open(tmp_path / "cmp" / "compare_lines.csv")))
+    strong = [x for x in rows if float(x["ratio_A"]) > 100]
+    assert strong and all(float(x["line_power_left"]) < 0.02 for x in strong), rows[:5]

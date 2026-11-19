@@ -8,6 +8,7 @@ eventi impulsivi a DM 0 (banda intera e sottobande), periodicita', canali sospet
 Esempio:
   python3 rfi_survey.py obs.fil --out survey_obs/
   python3 rfi_survey.py obs.fil --out prova/ --tmax 120      # solo i primi 120 s
+  python3 rfi_survey.py obs.fil --out survey_obs/ --spectrum # anche spettro e righe periodiche
 """
 import argparse
 import sys
@@ -27,10 +28,14 @@ def main(argv=None):
     p.add_argument("--thresh", type=float, default=d.thresh, help=f"soglia S/N degli eventi (default {d.thresh})")
     p.add_argument("--block", type=float, default=None, help="durata dei blocchi [s] (default automatica)")
     p.add_argument("--tmax", type=float, default=None, help="analizza solo i primi TMAX secondi")
+    p.add_argument("--spectrum", action="store_true",
+                   help="calcola lo spettro di potenza della serie a DM 0 (righe periodiche): spectrum.png/.csv/.npz")
+    p.add_argument("--spectrum-fmax", type=float, default=d.spectrum_fmax, help=f"frequenza massima dello spettro [Hz] (default {d.spectrum_fmax})")
     p.add_argument("--no-plots", action="store_true")
     p.add_argument("-q", "--quiet", action="store_true")
     a = p.parse_args(argv)
-    cfg = SurveyConfig(nsub=a.nsub, max_width=a.max_width, thresh=a.thresh, block=a.block)
+    cfg = SurveyConfig(nsub=a.nsub, max_width=a.max_width, thresh=a.thresh, block=a.block,
+                       spectrum=a.spectrum, spectrum_fmax=a.spectrum_fmax)
     run_survey(a.fil, a.out, cfg, plot=not a.no_plots, verbose=not a.quiet, tmax=a.tmax)
     return 0
 

@@ -101,3 +101,17 @@ Validazione (`tests/test_periodic.py`): righe a 50/100/150 Hz ridotte da >1000 a
 nessun effetto su dati senza periodicità; S/N degli FRB uguale a quello dello stesso segnale in dati
 senza modulazione (entro il rumore di misura).
 Riassunto in `step2.fil.periodic.json` (frequenza, ampiezza del profilo e varianza rimossa per tratto).
+
+### Diagnostica delle righe periodiche
+
+```bash
+python3 tools/rfi_survey.py step1.fil --out survey_step1/ --spectrum
+python3 tools/rfi_survey.py step2.fil --out survey_step2/ --spectrum
+python3 tools/compare_spectra.py survey_step1/ survey_step2/ --labels "step 1" "step 2" --out confronto/
+```
+
+Con `--spectrum` il survey calcola anche lo spettro di potenza della serie a DM 0 (banda intera e 16
+sottobande; media degli spettri dei blocchi con finestra di Hann; fino a 2 kHz, risoluzione ~0.24 Hz
+con blocchi da 4.19 s) e produce `spectrum.png`, `spectrum_lines.csv` (righe oltre 10 volte il continuo,
+con la famiglia armonica n x f0) e `spectrum.npz`. `compare_spectra.py` sovrappone due spettri, ne fa il
+rapporto e, per ogni riga del primo, riporta la frazione di potenza (sopra il continuo) rimasta nel secondo.

@@ -110,6 +110,9 @@ class SurveyConfig:
     ts_res: float = 1e-3         # risoluzione della serie a DM 0 salvata [s]
     max_runs: int = 20000        # massimo numero di eventi per livello e per blocco
     chan_z: float = 5.0          # soglia (z robusto) per segnalare canali sospetti
+    spectrum: bool = False       # calcola lo spettro di potenza della serie a DM 0 e le righe
+    spectrum_fmax: float = 2000.0  # frequenza massima dello spettro [Hz]
+    spectrum_thresh: float = 10.0  # soglia (spettro/continuo) per le righe
 
 
 @dataclass
@@ -368,6 +371,10 @@ def run_survey(path, outdir, cfg: SurveyConfig | None = None, plot: bool = True,
     ts_bin = 1 << max(0, int(round(np.log2(max(cfg.ts_res / ts, 1)))))
     tsd = Decimator(int(np.ceil(nsamp / ts_bin)), ts_bin, 1 + nsub)
     events: list[Event] = []
+    spec = None
+    if cfg.spectrum:
+        from .spectrum import SpectrumAccumulator
+        spec = SpectrumAccumulator(ts, 1 + nsub, cfg.spectrum_fmax)
 
     for ib, (s0, raw) in enumerate(fb.blocks(nper, 0, nsamp)):
         n = raw.shape[0]
@@ -409,6 +416,8 @@ def run_survey(path, outdir, cfg: SurveyConfig | None = None, plot: bool = True,
         X[:, 1:] = S
         del xf
         tsd.add(s0, X)
+        if spec is not None:
+            spec.add(X)
         # baseline mobile: mediane su finestre di Lb campioni, interpolate
         nb = n // Lb
         if nb >= 2:
@@ -515,6 +524,20 @@ def run_survey(path, outdir, cfg: SurveyConfig | None = None, plot: bool = True,
         periodicity_zerodm=per_zero, periodicity_event_train=per_train,
         periodicity_event_train_broadband=per_train_bb,
         runtime_s=None)
+    if spec is not None:
+        from . import spectrum as spm
+        f_sp, psd = spec.result()
+        if f_sp is not None:
+            lines = spm.find_lines(f_sp, psd[:, 0], thresh=cfg.spectrum_thresh)
+            spm.save(out, f_sp, psd, sub_freq, lines)
+            summary["spectrum"] = dict(resolution_hz=float(f_sp[1] - f_sp[0]), fmax_hz=float(f_sp[-1]),
+                                       n_segments=spec.count, n_lines=len(lines),
+                                       top_lines=sorted(lines, key=lambda x: -x["ratio"])[:20])
+            if plot:
+                try:
+                    spm.plot(out, f_sp, psd, sub_freq, lines, title=Path(fb.path).name)
+                except ImportError as e:
+                    print(f"  grafico dello spettro saltato ({e})")
     summary["runtime_s"] = time.time() - t_start
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
 
