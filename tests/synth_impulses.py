@@ -6,8 +6,15 @@ from frbclean.sigproc import write_header
 KDM = 4.148808e3
 
 
-def make(path, ts=64e-6, nch=128, dur=30.0, rfi=True, frbs=(), seed=0, sigma=8.0, masked=(60, 61)):
-    """frbs: (t0, DM, FWHM [s], ampiezza per canale e campione [sigma])."""
+def make(path, ts=64e-6, nch=128, dur=30.0, rfi=True, frbs=(), seed=0, sigma=8.0, masked=(60, 61), trains=False,
+         plateaus=False):
+    """frbs: (t0, DM, FWHM [s], ampiezza per canale e campione [sigma]).
+
+    trains: treni di impulsi a banda intera come il radar A reale (3 gruppi a -30, 0, +55 ms, ciascuno di
+    6 impulsi da 0.5 ms ogni 2.5 ms), ogni 5 s a partire da 2.6 s.
+    plateaus: emissione a banda intera lunga 150 ms (+0.4 sigma) con un impulso forte (+3 sigma, 1 ms) al
+    centro, ogni 5 s a partire da 4.1 s.
+    """
     rng = np.random.default_rng(seed)
     n = int(dur / ts)
     fch1, foff = 1446.0, -64.0 / nch
@@ -38,6 +45,16 @@ def make(path, ts=64e-6, nch=128, dur=30.0, rfi=True, frbs=(), seed=0, sigma=8.0
                 for tn, c in narrow:
                     m = np.abs(t - tn) < 1e-4
                     x[np.ix_(m, np.arange(c, c + 6))] += 5 * sigma
+            if trains:
+                for tp in np.arange(2.6, dur, 5.0):
+                    for g0 in (-0.030, 0.0, 0.055):
+                        for k in range(6):
+                            m = np.abs(t - tp - g0 - 0.0025 * k) < 2.5e-4
+                            x[m] += 3.0 * sigma
+            if plateaus:
+                for tp in np.arange(4.1, dur, 5.0):
+                    x[np.abs(t - tp) < 0.075] += 0.4 * sigma
+                    x[np.abs(t - tp) < 5e-4] += 3.0 * sigma
             for (tb, dm, w, a) in frbs:
                 dd = d(dm)
                 for c in range(nch):
@@ -48,4 +65,7 @@ def make(path, ts=64e-6, nch=128, dur=30.0, rfi=True, frbs=(), seed=0, sigma=8.0
             fo.write(np.clip(np.rint(x), 0, 255).astype(np.uint8).tobytes())
     truth["radarA"] = list(np.arange(0.7, dur, 3.0))
     truth["radarB"] = list(np.arange(1.9, dur, 4.0))
+    truth["trains"] = [tp + g0 + 0.0025 * k for tp in np.arange(2.6, dur, 5.0) for g0 in (-0.030, 0.0, 0.055)
+                       for k in range(6)] if trains else []
+    truth["plateaus"] = list(np.arange(4.1, dur, 5.0)) if plateaus else []
     return truth

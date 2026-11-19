@@ -21,10 +21,19 @@ Un solo passaggio a blocchi (con margini di lettura per boxcar e veto):
      griglia di DM da 0 a `dm_max`, cercando una traccia dispersa che passi per l'evento; l'evento
      viene PROTETTO se il miglior S/N a DM >= dm_min supera `protect_ratio` volte il miglior S/N a
      DM < dm_min e la soglia `protect_snr`.
+   Dentro un gruppo di rilevamenti sovrapposti (es. un treno di impulsi radar, o le coppie a 38 ms)
+   ogni impulso disgiunto e' un evento a se': si prendono i boxcar in ordine di S/N decrescente,
+   scartando quelli che si sovrappongono a uno gia' preso. Ognuno passa dal veto; un evento che cade
+   sulla traccia dispersa di un evento gia' protetto dello stesso gruppo e' protetto anch'esso
+   (un FRB visto a DM 0 in piu' sottobande produce piu' eventi lungo la stessa traccia).
 4. Sostituzione: per gli eventi non protetti, il rettangolo tempo (con margine) x canali delle
    sottobande colpite (tutti i canali se l'evento e' a banda intera o colpisce almeno meta' delle
-   sottobande) viene sostituito con rumore gaussiano con mediana e sigma robuste del canale. Tutti
-   gli altri campioni restano identici all'input.
+   sottobande) viene sostituito con rumore gaussiano. Il livello e' locale: per ogni canale la media
+   troncata (50% centrale) dei campioni sui due lati del rettangolo (escludendo le righe coperte da
+   altri eventi), interpolata linearmente;
+   la sigma e' quella robusta del canale nel blocco. Cosi' un impulso su un fondo rialzato (emissione
+   lunga, variazioni lente) non lascia un "buco" con bordi netti, che dedisperso creerebbe nuovi
+   candidati. Tutti gli altri campioni restano identici all'input.
 """
 from __future__ import annotations
 
@@ -59,6 +68,9 @@ class ImpulseConfig:
     narrow_frac: float = 0.5          # scorciatoia: larghezza < narrow_frac x dispersione a dm_min -> RFI
     track_z: float = 2.0              # S/N per sottobanda lungo la traccia per contare come "segnale"
     track_frac: float = 0.4           # frazione minima di sottobande con segnale lungo la traccia protetta
+    local_level: bool = True          # livello di sostituzione dai lati del rettangolo (False: mediana del blocco)
+    flank: float = 0.004              # lunghezza minima di ciascun lato per il livello locale [s]
+    flank_w: float = 2.0              # ... e in unita' della larghezza dell'evento
     seed: int = 0
 
 
@@ -185,24 +197,43 @@ def _events(det, geo, cfg, core0, core1):
             cur, end = [r], r[1]
     groups.append(cur)
     ev = []
-    for g in groups:
-        best = max(g, key=lambda x: x[4])
-        a, b = min(x[0] for x in g), max(x[1] for x in g)
-        if not (core0 <= best[6] < core1):
-            continue
-        hits = np.zeros(geo.nsub, bool)
-        vhits = np.zeros(geo.nsub, bool)
-        for x in g:
-            hits |= x[5]
-            vhits |= x[7]
-            if x[3] > 0:
-                hits[x[3] - 1] = True
-                vhits[x[3] - 1] = True
-        # a, b: intervallo del boxcar migliore (quello che si sostituisce); span: unione di tutti i record
-        ev.append(dict(a=best[6], b=best[6] + best[2], W=best[2], col=best[3], snr=best[4], hits=hits, vhits=vhits,
-                       peak=best[6],
-                       span=(a, b)))
+    for gi, g in enumerate(groups):
+        # impulsi disgiunti del gruppo: boxcar in ordine di S/N, scartando quelli sovrapposti a uno gia' preso
+        taken = []
+        for x in sorted(g, key=lambda x: -x[4]):
+            s0, s1 = x[6], x[6] + x[2]
+            if any(s0 < b and a < s1 for a, b in taken):
+                continue
+            taken.append((s0, s1))
+            if not (core0 <= s0 < core1):
+                continue
+            hits = np.zeros(geo.nsub, bool)
+            vhits = np.zeros(geo.nsub, bool)
+            for y in g:           # sottobande colpite: dai record il cui boxcar di picco si sovrappone
+                if y[6] < s1 and s0 < y[6] + y[2]:
+                    hits |= y[5]
+                    vhits |= y[7]
+                    if y[3] > 0:
+                        hits[y[3] - 1] = True
+                        vhits[y[3] - 1] = True
+            ev.append(dict(a=s0, b=s1, W=x[2], col=x[3], snr=x[4], hits=hits, vhits=vhits, peak=s0, group=gi))
     return ev
+
+
+def _on_track(ev, tracks, geo, cfg):
+    """True se l'evento cade sulla traccia dispersa (t0, dm, w) di un evento gia' protetto dello stesso gruppo."""
+    p, W = ev["peak"], ev["W"]
+    smear1 = geo.smear_sub_min / cfg.dm_min
+    broadband = ev["col"] == 0 or ev["hits"].mean() >= cfg.full_frac
+    for t0, dm, w in tracks:
+        if broadband:
+            if t0 - W - w <= p <= t0 + dm * geo.delay1.max() + w:
+                return True
+        else:
+            g = ev["col"] - 1 if ev["col"] > 0 else int(np.argmax(ev["hits"]))
+            if abs(p - (t0 + dm * geo.delay1[g])) <= W + w + dm * smear1:
+                return True
+    return False
 
 
 def _veto(ev, det, geo, cfg):
@@ -244,7 +275,7 @@ def _veto(ev, det, geo, cfg):
     # la scala dipende dalla serie in cui l'evento e' visto meglio: banda intera (sweep) o sottobanda
     per_dm = geo.delay1.max() if ev["col"] == 0 else smear1
     dm_event = min(cfg.dm_max, cfg.dm_min + 2.5 * W / max(per_dm, 1e-9))
-    best_lo, best_hi, bdm, bw = -np.inf, -np.inf, 0.0, 0
+    best_lo, best_hi, bdm, bw, bt0 = -np.inf, -np.inf, 0.0, 0, p
     track_frac = 0.0
     sq = np.sqrt(cols.size)
     for w in widths:
@@ -286,6 +317,7 @@ def _veto(ev, det, geo, cfg):
             if per_dm[j] > best_hi:
                 best_hi, bdm, bw = float(per_dm[j]), float(dms[j]), w
                 i = int(np.argmax(tot[j]))
+                bt0 = int(t0[j, i])
                 track_frac = float(np.mean(M[j, i] > cfg.track_z))
     # coerenza: lungo la traccia migliore una buona frazione delle sottobande deve mostrare segnale
     # (un FRB e' esteso in frequenza; una traccia che raccoglie poche sottobande molto forti e' di
@@ -293,7 +325,42 @@ def _veto(ev, det, geo, cfg):
     protect = (best_hi >= cfg.protect_snr and best_hi >= cfg.protect_ratio * max(best_lo, 0)
                and track_frac >= cfg.track_frac)
     return protect, dict(snr_lowdm=best_lo, snr_dm=best_hi, dm=bdm, width_dm=float(bw), broadband=float(broadband),
-                         track_frac=track_frac)
+                         track_frac=track_frac, t0=bt0)
+
+
+def _trimmed_mean(v):
+    n = v.shape[0]
+    k = n // 4
+    s = np.sort(v, 0)
+    return s[k:n - k].mean(0)
+
+
+def _local_level(xf, chans, A, B, L, fallback, hot=None):
+    """Livello per canale nelle righe [A, B) di xf: media troncata di L righe "pulite" (non coperte da
+    altri eventi, maschera `hot`) a sinistra di A e a destra di B, cercate fino a 8L righe di distanza;
+    interpolazione lineare tra i centri dei due lati. Restituisce (B-A, nchans) o fallback (nchans,)."""
+    n = xf.shape[0]
+
+    def side(lo, hi, from_end):
+        lo, hi = max(0, lo), min(n, hi)
+        if hi - lo < 8:
+            return None, None
+        rows = np.arange(lo, hi)
+        if hot is not None:
+            rows = rows[~hot[lo:hi]]
+        rows = rows[-L:] if from_end else rows[:L]
+        if rows.size < 8:
+            return None, None
+        return _trimmed_mean(xf[rows][:, chans]), rows.mean()
+
+    l, cl = side(A - 8 * L, A, True)
+    r, cr = side(B, B + 8 * L, False)
+    if l is None and r is None:
+        return fallback
+    if l is None or r is None:
+        return l if r is None else r
+    f = ((np.arange(A, B) + 0.5 - cl) / (cr - cl)).astype(np.float32)[:, None]
+    return l + (r - l) * f
 
 
 def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, report=None, tmax=None) -> dict:
@@ -340,17 +407,29 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
             det = _detect(X, geo, cfg)
             evs = _events(det, geo, cfg, c0 - e0, c1 - e0)
             out_blk = raw[c0 - e0:c1 - e0].copy()
+            tracks = {}
+            hot = np.zeros(xf.shape[0], bool)      # righe coperte da eventi: escluse dal calcolo del livello locale
+            for ev in evs:
+                mh = max(2, int(cfg.margin_frac * ev["W"]))
+                hot[max(0, ev["a"] - mh):ev["b"] + mh] = True
             for ev in evs:
                 stats["events"] += 1
                 tv = time.time()
-                prot, info = _veto(ev, det, geo, cfg) if cfg.veto else (False, {})
+                tr = tracks.setdefault(ev["group"], [])
+                if cfg.veto and tr and _on_track(ev, tr, geo, cfg):
+                    prot, info = True, dict(reason="traccia")
+                else:
+                    prot, info = _veto(ev, det, geo, cfg) if cfg.veto else (False, {})
                 veto_time += time.time() - tv
                 if info.get("reason") == "stretto":
                     stats["narrow"] += 1
                 if prot:
                     stats["protected"] += 1
-                    protected_list.append(dict(t=float((e0 + ev["a"]) * ts), width_s=float(ev["W"] * ts),
-                                               snr_dm0=float(ev["snr"]), **{k: float(v) for k, v in info.items()}))
+                    if "t0" in info:
+                        tr.append((info["t0"], info["dm"], info["width_dm"]))
+                    rec = dict(t=float((e0 + ev["a"]) * ts), width_s=float(ev["W"] * ts), snr_dm0=float(ev["snr"]))
+                    rec.update({k: (v if isinstance(v, str) else float(v)) for k, v in info.items() if k != "t0"})
+                    protected_list.append(rec)
                     continue
                 stats["removed"] += 1
                 W = ev["W"]
@@ -365,7 +444,11 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
                     chans = np.flatnonzero(live & ev["hits"][geo.sub_of])
                 if chans.size == 0:
                     continue
-                noise = med[chans] + sig[chans] * rng.standard_normal((b - a, chans.size)).astype(np.float32)
+                level = med[chans]
+                if cfg.local_level:
+                    level = _local_level(xf, chans, a + (c0 - e0), b + (c0 - e0),
+                                         max(int(cfg.flank / ts), int(cfg.flank_w * W), 8), level, hot)
+                noise = level + sig[chans] * rng.standard_normal((b - a, chans.size)).astype(np.float32)
                 if fb.nbits != 32:
                     noise = np.clip(np.rint(noise), lo, hi)
                 out_blk[a:b][:, chans] = noise.astype(out_blk.dtype)

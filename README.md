@@ -149,8 +149,15 @@ python3 tools/rfi_impulses.py step2.fil step3.fil --thresholds 10 8 6 5
      sottobande ha S/N > 2 (un FRB e' esteso in frequenza; una traccia che raccoglie poche sottobande
      forti e' un'altra RFI attraversata per caso). Per gli eventi a banda parziale si usano solo le
      sottobande non colpite.
-3. **Sostituzione** con rumore del solo rettangolo tempo x sottobande colpite; tutti gli altri
-   campioni restano identici all'input.
+   Ogni impulso disgiunto e' un evento a se': in un gruppo di rilevamenti sovrapposti (treni di
+   impulsi radar, coppie a 38 ms) si prendono i boxcar in ordine di S/N scartando quelli sovrapposti a
+   uno gia' preso. Un evento sulla traccia dispersa di un evento gia' protetto dello stesso gruppo e'
+   protetto anch'esso (i pezzi di un FRB visto a DM 0 in piu' sottobande).
+3. **Sostituzione** con rumore del solo rettangolo tempo x sottobande colpite, al **livello locale**:
+   per ogni canale la media troncata dei campioni ai due lati del rettangolo (escluse le righe di altri
+   eventi), interpolata linearmente; cosi' un impulso su un fondo rialzato non lascia un "buco" con
+   bordi netti (che dedisperso creerebbe nuovi candidati). Tutti gli altri campioni restano identici
+   all'input.
 
 Prodotti: `step3.fil.impulses.json` (eventi rimossi/protetti, frazione di dati sostituita) e
 `step3.fil.impulses_events.csv`.
@@ -159,5 +166,7 @@ Validazione (`tests/test_impulses.py` e griglia DM x larghezza su dati sintetici
 e parziale e impulsi stretti): eventi a DM 0 ridotti di circa l'88%, 0.1-0.4% dei dati sostituiti,
 nessuna modifica su rumore puro. **Limite**: un FRB abbastanza brillante da essere visto a DM 0 e'
 protetto se la sua larghezza e' al massimo ~0.7 volte lo sweep del suo DM (con 64 MHz a 1.4 GHz:
-~4 ms a DM 30, tutte le larghezze fino a 16 ms a DM >= 50); oltre, e per DM < 20, puo' essere rimosso.
+~4 ms a DM 30 e 50, tutte le larghezze fino a 16 ms a DM >= 100); oltre, e per DM < 20, puo' essere
+rimosso. Su treni di impulsi sintetici simili al radar A reale (3 gruppi di 6 impulsi) restano 0 impulsi
+su 54 (prima della correzione per-impulso: 46 su 54).
 Gli FRB deboli, non rivelati a DM 0, non vengono toccati.

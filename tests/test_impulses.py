@@ -41,3 +41,23 @@ def test_pure_noise_untouched(tmp_path):
     summ = run_impulses(tmp_path / "n.fil", tmp_path / "o.fil", ImpulseConfig(), verbose=False)
     assert summ["removed"] == 0
     assert (tmp_path / "n.fil").read_bytes() == (tmp_path / "o.fil").read_bytes()
+
+
+def test_trains_and_raised_baseline(tmp_path):
+    """Treni di impulsi (come il radar A reale) rimossi tutti; impulso su fondo rialzato senza "buchi"."""
+    tr = si.make(tmp_path / "t.fil", dur=10.5, rfi=False, trains=True, plateaus=True)
+    run_impulses(tmp_path / "t.fil", tmp_path / "o.fil", ImpulseConfig(), verbose=False)
+    _, d = load(tmp_path / "o.fil")
+    ts = 64e-6
+    live = np.r_[0:60, 62:128]
+    s = (d[:, live].astype(float) - 128).sum(1) / 8 / np.sqrt(live.size)
+    w8 = np.convolve(s, np.ones(8), "same") / np.sqrt(8)
+    for t in tr["trains"]:
+        i = int(t / ts)
+        assert w8[i - 8:i + 8].max() < 6, t
+    for t in tr["plateaus"]:
+        i = int(t / ts)
+        # il fondo (+0.4 sigma per canale) resta, senza buchi; l'impulso (+3 sigma) sparisce
+        lev = s[i - int(0.06 / ts):i + int(0.06 / ts)] / np.sqrt(live.size)
+        blk = lev[: lev.size // 64 * 64].reshape(-1, 64).mean(1)
+        assert blk.min() > 0.25 and blk.max() < 0.6, (t, blk.min(), blk.max())
