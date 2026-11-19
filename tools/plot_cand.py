@@ -10,7 +10,7 @@ Per ogni file, una colonna con:
   4. piano DM-tempo (S/N del boxcar per ogni DM tra 0 e 2 DM).
 
 Il tempo del candidato e' quello di Heimdall (stime/tcand): arrivo alla frequenza piu' alta della banda.
-Ogni canale e' normalizzato con mediana e MAD della finestra letta; canali costanti (mascherati) a zero.
+Ogni canale e' normalizzato con mediana e MAD su +-norm_win (default 1 s), cosi' come i boxcar; canali costanti (mascherati) a zero.
 
 Esempi:
   python3 plot_cand.py step2.fil step3.fil --t 657.412 --dm 45.8 --width 3 -o cand_657.png
@@ -51,12 +51,23 @@ def dedisperse(x, f, dm, tsamp, nout):
     return x[idx, np.arange(x.shape[1])]
 
 
-def boxcar_snr(series, w):
+def _box(series, w):
     c = np.concatenate([[0], np.cumsum(series, dtype=np.float64)])
-    b = (c[w:] - c[:-w]) / np.sqrt(w)
+    return (c[w:] - c[:-w]) / np.sqrt(w)
+
+
+def box_stats(series, w):
+    """Mediana e sigma robusta del boxcar di larghezza w (statistica di riferimento su una finestra lunga)."""
+    b = _box(series, w)[::max(1, w // 4)]
     med = np.median(b)
     sig = np.median(np.abs(b - med)) * 1.4826
-    return (b - med) / (sig if sig > 0 else 1), w
+    return med, (sig if sig > 0 else 1.0)
+
+
+def boxcar_snr(series, w, stats=None):
+    b = _box(series, w)
+    med, sig = stats if stats is not None else box_stats(series, w)
+    return (b - med) / sig, w
 
 
 def block(a, r, axis=0):
@@ -74,6 +85,9 @@ def main(argv=None):
     p.add_argument("--dm", type=float, required=True)
     p.add_argument("--width", type=int, default=None, help="larghezza Heimdall: log2 dei campioni (default: scelta dal profilo)")
     p.add_argument("--win", type=float, default=0.1, help="semi-finestra mostrata attorno al candidato [s] (default 0.1)")
+    p.add_argument("--norm-win", type=float, default=1.0,
+                   help="semi-finestra [s] usata per mediana/sigma di canali e boxcar (default 1 s; deve contenere "
+                        "molte larghezze del candidato, altrimenti l'S/N dei boxcar larghi e' sottostimato)")
     p.add_argument("--nsub", type=int, default=32, help="sottobande negli spettri dinamici (default 32)")
     p.add_argument("--zoom", type=float, default=None,
                    help="semi-finestra degli spettri dinamici [s] (default: max(20 ms, 40 larghezze))")
@@ -92,11 +106,18 @@ def main(argv=None):
                            gridspec_kw=dict(height_ratios=[0.8, 1.3, 1.3, 1.1]))
     for k, path in enumerate(a.fil):
         fb = Filterbank(path)
-        x, f, live, s0, delay = load(fb, a.t, a.dm, a.win)
+        # lettura larga (statistiche), poi ritaglio di +-win attorno al candidato per i pannelli
+        wr = max(a.win, a.norm_win)
+        xw, f, live, sw0, delay = load(fb, a.t, a.dm, wr)
+        nlive = max(1, live.sum())
+        nw = int(round(2 * wr / fb.tsamp))
+        profw = dedisperse(xw, f, a.dm, fb.tsamp, nw).sum(1) / np.sqrt(nlive)
+        off = int(round((wr - a.win) / fb.tsamp))
+        x = xw[off:]
+        s0 = sw0 + off
         nout = int(round(2 * a.win / fb.tsamp))
         dd = dedisperse(x, f, a.dm, fb.tsamp, nout)
-        nlive = max(1, live.sum())
-        prof = dd.sum(1) / np.sqrt(nlive)
+        prof = profw[off:off + nout]
         # larghezza: quella data, o la migliore entro 2^0..2^12 nella zona centrale
         ws = [2 ** a.width] if a.width is not None else [2 ** j for j in range(13)]
         best = None
@@ -104,18 +125,21 @@ def main(argv=None):
         for w in ws:
             if w >= nout // 4:
                 continue
-            z, _ = boxcar_snr(prof, w)
+            z, _ = boxcar_snr(prof, w, box_stats(profw, w))
             lo, hi = max(0, c0 - 2 * w - int(0.01 / fb.tsamp)), min(z.size, c0 + w + int(0.01 / fb.tsamp))
             j = lo + int(np.argmax(z[lo:hi]))
             if best is None or z[j] > best[0]:
                 best = (z[j], w, j)
         snr, w, jpk = best
+        print(f"{labels[k]}: DM {a.dm:.2f}, boxcar {w} campioni ({w * fb.tsamp * 1e3:.3g} ms), S/N {snr:.2f}")
         tres = a.tres or w * fb.tsamp
         r = max(1, int(round(tres / fb.tsamp)))
         tt = (np.arange(nout // r) * r + r / 2) * fb.tsamp + s0 * fb.tsamp - a.t
         # 1. profilo
         pr = block(prof, r) * np.sqrt(r)
-        pr = (pr - np.median(pr)) / (np.median(np.abs(pr - np.median(pr))) * 1.4826 or 1)
+        prw = block(profw, r) * np.sqrt(r)
+        mw = np.median(prw)
+        pr = (pr - mw) / (np.median(np.abs(prw - mw)) * 1.4826 or 1)
         ax[0, k].step(tt * 1e3, pr, where="mid", lw=0.8)
         ax[0, k].axvline((jpk + s0) * fb.tsamp - a.t + w * fb.tsamp / 2 - 0 * fb.tsamp, color="r", lw=0.6, ls=":")
         ax[0, k].set_title(f"{labels[k]}\nDM {a.dm:.1f}, boxcar {w} camp. ({w * fb.tsamp * 1e3:.3g} ms): S/N {snr:.1f}",
@@ -143,9 +167,10 @@ def main(argv=None):
         # 4. DM-tempo
         dms = np.linspace(0, 2 * a.dm, 81)
         M = np.empty((dms.size, nout // r))
+        ref = box_stats(profw, w)   # il rumore del boxcar non dipende dal DM
         for i, d in enumerate(dms):
             s = dedisperse(x, f, d, fb.tsamp, nout).sum(1) / np.sqrt(nlive)
-            z, _ = boxcar_snr(s, w)
+            z, _ = boxcar_snr(s, w, ref)
             z = np.concatenate([z, np.zeros(nout - z.size)])
             M[i] = block(z, r)
         ax[3, k].imshow(M, aspect="auto", origin="lower", extent=[tt[0] * 1e3, tt[-1] * 1e3, dms[0], dms[-1]],
