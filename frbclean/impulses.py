@@ -28,9 +28,9 @@ Un solo passaggio a blocchi (con margini di lettura per boxcar e veto):
    (un FRB visto a DM 0 in piu' sottobande produce piu' eventi lungo la stessa traccia).
 4. Sostituzione: per gli eventi non protetti, il rettangolo tempo (con margine) x canali delle
    sottobande colpite (tutti i canali se l'evento e' a banda intera o colpisce almeno meta' delle
-   sottobande) viene sostituito con rumore gaussiano. Il livello e' locale: per ogni canale il primo
-   quartile + 0.674 sigma dei campioni sui due lati del rettangolo (insensibile agli impulsi vicini
-   finche' occupano meno di ~3/4 del tempo), interpolato linearmente;
+   sottobande) viene sostituito con rumore gaussiano al livello del blocco, oppure al livello locale
+   (media delle righe senza eventi ai due lati, interpolata) se questo differisce significativamente
+   da quello del blocco, come per un impulso su un fondo rialzato;
    la sigma e' quella robusta del canale nel blocco.
    Il rettangolo viene esteso finche' le righe adiacenti hanno ancora segnale nelle sottobande
    sostituite (i bordi di un impulso possono essere sfasati tra sottobande). Cosi' un impulso su un fondo rialzato (emissione
@@ -76,6 +76,7 @@ class ImpulseConfig:
     local_level: bool = True          # livello di sostituzione dai lati del rettangolo (False: mediana del blocco)
     flank: float = 0.004              # lunghezza minima di ciascun lato per il livello locale [s]
     flank_w: float = 2.0              # ... e in unita' della larghezza dell'evento
+    level_z: float = 5.0              # S/N oltre cui i lati differiscono dal livello del blocco -> livello locale
     seed: int = 0
 
 
@@ -241,7 +242,7 @@ def _on_track(ev, tracks, geo, cfg):
     return False
 
 
-def _veto(ev, det, geo, cfg):
+def _veto(ev, det, geo, cfg, excl=None):
     """
     True se l'evento va protetto: esiste una traccia dispersa con DM >= dm_min che passa per l'evento
     e da' un S/N maggiore (di protect_ratio) di quello delle tracce con DM < dm_min.
@@ -253,6 +254,10 @@ def _veto(ev, det, geo, cfg):
     larghezza maggiore e' comunque migliore): cosi' il costo resta piccolo.
     Per un evento a banda parziale si usano solo le sottobande NON colpite: un FRB lascia segnale
     lungo la traccia anche li', un impulso RFI stretto in frequenza no.
+    `excl`: intervalli (inizi, fini) degli altri impulsi a banda larga dello stesso gruppo, azzerati
+    nella somma: in un treno di impulsi radar una traccia dispersa che attraversa impulsi diversi in
+    sottobande diverse imita un FRB (un FRB, invece, a DM 0 appare come un solo evento a banda larga
+    o come pezzi a banda parziale, che non vengono azzerati).
     """
     W = ev["W"]
     series_smear = geo.smear_full_min if ev["col"] == 0 else geo.smear_sub_min
@@ -312,6 +317,11 @@ def _veto(ev, det, geo, cfg):
         t0 = np.where(valid, t0, lo_t[:, None])
         idx = t0[:, :, None] + d[:, None, :]                                               # (nD, nT, ncols)
         M = sub[idx, cols[None, None, :]]
+        if excl is not None:
+            st, en = excl[0] - w + 1, excl[1]
+            j = np.searchsorted(st, idx, side="right") - 1
+            inside = (j >= 0) & (idx < en[np.maximum(j, 0)])
+            M = np.where(inside, 0.0, M)
         tot = np.where(valid, M.sum(2), -np.inf) / sq                                      # (nD, nT)
         per_dm = tot.max(1)
         lo = dms < cfg.dm_min
@@ -355,28 +365,40 @@ def _grow(X, subs, A, B, maxext, cfg):
     return max(0, A - 1 if A < a0 else A), min(n, B + 1 if B > b0 else B)
 
 
-def _local_level(xf, chans, A, B, L, fallback, sig):
-    """Livello per canale nelle righe [A, B) di xf, dalle L righe adiacenti a sinistra di A e a destra
-    di B, interpolato linearmente tra i centri dei due lati. Restituisce (B-A, nchans) o fallback (nchans,).
+def _local_level(xf, chans, A, B, L, med, sig, hot, zthr):
+    """Livello per canale nelle righe [A, B) di xf.
 
-    Stimatore: primo quartile + 0.674 sigma (sigma robusta del canale nel blocco). L'RFI aggiunge solo
-    potenza, quindi il primo quartile resta quello del fondo finche' gli impulsi occupano meno di ~3/4
-    dei campioni (la media troncata o la mediana no: con treni fitti salgono; e prendere solo le righe
-    senza eventi seleziona le piu' basse e da' un livello sottostimato, cioe' un "buco"). Su un fondo
-    rialzato (emissione lunga) da' il livello del fondo, che quindi non presenta bordi."""
+    Di default il livello del blocco (mediana robusta del canale): dopo lo step 1 i dati sono gia'
+    normalizzati e questo livello e' privo di bias. Un errore di livello anche piccolo e' pericoloso,
+    perche' si somma coerentemente su tutti i canali e campioni del rettangolo (0.1 sigma per canale su
+    250 canali e 32 campioni danno S/N ~ 13).
+    Si passa al livello locale solo se le righe ai lati del rettangolo (entro 2L righe, escluse quelle
+    coperte da eventi: maschera `hot`) differiscono in modo significativo dal livello del blocco
+    (S/N > zthr sulla somma dei canali): e' il caso di un impulso su un fondo rialzato, dove il livello
+    del blocco lascerebbe un "buco". Il livello locale e' la media delle righe pulite piu' vicine di
+    ciascun lato (cercate entro 2L righe, poi fino a 8L), interpolata linearmente tra i due lati. Restituisce (nchans,) o (B-A, nchans)."""
     n = xf.shape[0]
-    q = 0.6745 * sig[chans]
+    m0, s0 = med[chans], sig[chans]
 
-    def side(lo, hi):
-        lo, hi = max(0, lo), min(n, hi)
-        if hi - lo < 8:
-            return None, None
-        return np.percentile(xf[lo:hi][:, chans], 25, axis=0) + q, (lo + hi) / 2.0
+    def side(edge, direction):
+        # righe senza eventi piu' vicine al rettangolo: prima entro 2L righe, poi fino a 8L
+        for span in (2 * L, 8 * L):
+            lo, hi = (edge - span, edge) if direction < 0 else (edge, edge + span)
+            lo, hi = max(0, lo), min(n, hi)
+            if hi - lo < 8:
+                return None, None, 0.0
+            rows = np.arange(lo, hi)[~hot[lo:hi]]
+            rows = rows[-L:] if direction < 0 else rows[:L]
+            if rows.size >= 8:
+                mu = xf[rows][:, chans].mean(0)
+                z = ((mu - m0) / s0).sum() * np.sqrt(rows.size / chans.size)
+                return mu, rows.mean(), z
+        return None, None, 0.0
 
-    l, cl = side(A - L, A)
-    r, cr = side(B, B + L)
-    if l is None and r is None:
-        return fallback
+    l, cl, zl = side(A, -1)
+    r, cr, zr = side(B, +1)
+    if max(abs(zl), abs(zr)) < zthr:
+        return m0
     if l is None or r is None:
         return l if r is None else r
     f = ((np.arange(A, B) + 0.5 - cl) / (cr - cl)).astype(np.float32)[:, None]
@@ -428,14 +450,47 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
             evs = _events(det, geo, cfg, c0 - e0, c1 - e0)
             out_blk = raw[c0 - e0:c1 - e0].copy()
             tracks = {}
+            # impulsi a banda larga di ogni gruppo (per il veto degli altri eventi dello stesso gruppo)
+            bb = {}
+            for ev in evs:
+                if ev["col"] == 0 or ev["hits"].mean() >= cfg.full_frac:
+                    mh = max(2, int(cfg.margin_frac * ev["W"]))
+                    bb.setdefault(ev["group"], []).append((ev["a"] - mh, ev["b"] + mh, id(ev)))
+            # rettangolo di ogni evento (boxcar + margine, esteso sui bordi con segnale) e righe "calde"
+            # (coperte da eventi, con qualche campione in piu'), escluse dalla stima del livello locale
+            hot = np.zeros(xf.shape[0], bool)
+            for ev in evs:
+                W = ev["W"]
+                m = max(2, int(cfg.margin_frac * W))
+                full = ev["col"] == 0 or ev["hits"].mean() >= cfg.full_frac or not ev["hits"].any()
+                subs = np.flatnonzero(geo.nlive > 0) if full else np.flatnonzero(ev["hits"] & (geo.nlive > 0))
+                A_, B_ = ev["a"] - m, ev["b"] + m
+                if cfg.grow and subs.size:
+                    A_, B_ = _grow(X, subs, A_, B_, max(4 * W, 64), cfg)
+                ev["rect"], ev["full"] = (A_, B_), full
+                pad = 4      # il rettangolo e' gia' esteso sui bordi con segnale
+                hot[max(0, A_ - pad):B_ + pad] = True
             for ev in evs:
                 stats["events"] += 1
                 tv = time.time()
                 tr = tracks.setdefault(ev["group"], [])
                 if cfg.veto and tr and _on_track(ev, tr, geo, cfg):
                     prot, info = True, dict(reason="traccia")
+                elif cfg.veto:
+                    others = sorted((a_, b_) for a_, b_, k_ in bb.get(ev["group"], []) if k_ != id(ev))
+                    prot, info = _veto(ev, det, geo, cfg)
+                    if prot and others:
+                        # gli altri impulsi a banda larga del gruppo devono stare tutti dentro lo sweep della
+                        # traccia (pezzi dello stesso burst); altrimenti la traccia potrebbe solo collegare
+                        # impulsi diversi di un treno: si ripete il veto con gli altri impulsi azzerati
+                        w_ = info["width_dm"]
+                        lo_ = info["t0"] - w_ - ev["W"]
+                        hi_ = info["t0"] + info["dm"] * geo.delay1.max() + w_ + ev["W"]
+                        if not all(lo_ <= a_ and b_ <= hi_ for a_, b_ in others):
+                            excl = (np.array([o_[0] for o_ in others]), np.array([o_[1] for o_ in others]))
+                            prot, info = _veto(ev, det, geo, cfg, excl)
                 else:
-                    prot, info = _veto(ev, det, geo, cfg) if cfg.veto else (False, {})
+                    prot, info = False, {}
                 veto_time += time.time() - tv
                 if info.get("reason") == "stretto":
                     stats["narrow"] += 1
@@ -449,12 +504,8 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
                     continue
                 stats["removed"] += 1
                 W = ev["W"]
-                m = max(2, int(cfg.margin_frac * W))
-                full = ev["col"] == 0 or ev["hits"].mean() >= cfg.full_frac or not ev["hits"].any()
-                subs = np.flatnonzero(geo.nlive > 0) if full else np.flatnonzero(ev["hits"] & (geo.nlive > 0))
-                A_, B_ = ev["a"] - m, ev["b"] + m
-                if cfg.grow and subs.size:
-                    A_, B_ = _grow(X, subs, A_, B_, max(4 * W, 64), cfg)
+                full = ev["full"]
+                A_, B_ = ev["rect"]
                 a = max(c0 - e0, A_) - (c0 - e0)
                 b = min(c1 - e0, B_) - (c0 - e0)
                 if b <= a:
@@ -468,7 +519,8 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
                 level = med[chans]
                 if cfg.local_level:
                     level = _local_level(xf, chans, a + (c0 - e0), b + (c0 - e0),
-                                         max(int(cfg.flank / ts), int(cfg.flank_w * W), 8), level, sig)
+                                         max(int(cfg.flank / ts), int(cfg.flank_w * W), 8), med, sig, hot,
+                                         cfg.level_z)
                 noise = level + sig[chans] * rng.standard_normal((b - a, chans.size)).astype(np.float32)
                 if fb.nbits != 32:
                     noise = np.clip(np.rint(noise), lo, hi)

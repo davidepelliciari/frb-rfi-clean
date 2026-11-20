@@ -58,7 +58,9 @@ def test_trains_and_raised_baseline(tmp_path):
     for t in tr["plateaus"]:
         i = int(t / ts)
         # il fondo (+0.4 sigma per canale) resta, senza buchi; l'impulso (+3 sigma) sparisce
-        lev = s[i - int(0.06 / ts):i + int(0.06 / ts)] / np.sqrt(live.size)
+        # parte centrale del fondo (75 ms per lato): vicino ai bordi il livello e' interpolato verso il
+        # rumore esterno, con una rampa graduale
+        lev = s[i - int(0.05 / ts):i + int(0.05 / ts)] / np.sqrt(live.size)
         blk = lev[: lev.size // 64 * 64].reshape(-1, 64).mean(1)
         assert blk.min() > 0.25 and blk.max() < 0.6, (t, blk.min(), blk.max())
 
@@ -89,3 +91,38 @@ def test_misaligned_edges(tmp_path):
     up, lo = z[:, :64].sum(1) / 8, z[:, 64:].sum(1) / 8
     for i in starts:
         assert up[i - 20:i + 60].max() < 6 and lo[i - 20:i + 60].max() < 6, i
+
+
+def test_dense_irregular_trains(tmp_path):
+    """Treni densi e irregolari (spaziature 2-6 ms, impulsi 0.5-3 ms, ampiezze diverse tra le due meta'
+    della banda): nessuna protezione spuria (una traccia dispersa che collega impulsi diversi imita un FRB)
+    e nessun impulso residuo, anche per errori di livello (che si sommano su canali e campioni)."""
+    from frbclean.sigproc import write_header
+    ts, nch, dur = 16e-6, 128, 4.5
+    n = int(dur / ts)
+    rng = np.random.default_rng(3)
+    items = [("HEADER_START", None), ("nchans", nch), ("nbits", 8), ("nifs", 1), ("tsamp", ts), ("fch1", 1446.0),
+             ("foff", -0.5), ("tstart", 60000.0), ("data_type", 1), ("HEADER_END", None)]
+    x = 128 + 8 * rng.standard_normal((n, nch)).astype(np.float32)
+    starts = []
+    for tp in (0.7, 1.7, 2.7, 3.7):
+        for g0 in (-0.030, 0.0, 0.055):
+            t = tp + g0
+            for _ in range(int(rng.integers(5, 10))):
+                t += rng.uniform(0.002, 0.006)
+                i, L = int(t / ts), int(rng.integers(30, 200))
+                au, al = rng.uniform(0.5, 3.0, 2) * 8
+                sh = int(rng.integers(-6, 7))
+                x[i:i + L, :64] += au
+                x[i + sh:i + sh + L, 64:] += al
+                starts.append(i)
+    with open(tmp_path / "d.fil", "wb") as f:
+        f.write(write_header(items))
+        f.write(np.clip(np.rint(x), 0, 255).astype(np.uint8).tobytes())
+    summ = run_impulses(tmp_path / "d.fil", tmp_path / "o.fil", ImpulseConfig(), verbose=False)
+    assert summ["protected"] == 0
+    _, d = load(tmp_path / "o.fil")
+    s = (d.astype(float) - 128).sum(1) / 8 / np.sqrt(nch)
+    c = np.convolve(s, np.ones(32), "same") / np.sqrt(32)
+    res = np.array([c[i - 40:i + 220].max() for i in starts])
+    assert np.mean(res > 6) < 0.03, (np.sum(res > 6), len(starts), res.max())
