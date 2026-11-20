@@ -61,3 +61,31 @@ def test_trains_and_raised_baseline(tmp_path):
         lev = s[i - int(0.06 / ts):i + int(0.06 / ts)] / np.sqrt(live.size)
         blk = lev[: lev.size // 64 * 64].reshape(-1, 64).mean(1)
         assert blk.min() > 0.25 and blk.max() < 0.6, (t, blk.min(), blk.max())
+
+
+def test_misaligned_edges(tmp_path):
+    """Impulsi con bordi sfasati tra le due meta' della banda: nessuna "scheggia" di 1-2 campioni residua."""
+    from frbclean.sigproc import write_header
+    ts, nch, dur = 16e-6, 128, 3.5
+    n = int(dur / ts)
+    rng = np.random.default_rng(1)
+    items = [("HEADER_START", None), ("nchans", nch), ("nbits", 8), ("nifs", 1), ("tsamp", ts), ("fch1", 1446.0),
+             ("foff", -0.5), ("tstart", 60000.0), ("data_type", 1), ("HEADER_END", None)]
+    x = 128 + 8 * rng.standard_normal((n, nch)).astype(np.float32)
+    starts = []
+    for tp in (0.7, 1.7, 2.7):
+        for k in range(6):
+            i = int((tp + 0.0025 * k) / ts)
+            L = int(rng.integers(20, 40))
+            x[i - 3:i + L - 1, :64] += 2.5 * 8
+            x[i:i + L, 64:] += 2.5 * 8
+            starts.append(i)
+    with open(tmp_path / "e.fil", "wb") as f:
+        f.write(write_header(items))
+        f.write(np.clip(np.rint(x), 0, 255).astype(np.uint8).tobytes())
+    run_impulses(tmp_path / "e.fil", tmp_path / "o.fil", ImpulseConfig(), verbose=False)
+    _, d = load(tmp_path / "o.fil")
+    z = (d.astype(float) - 128) / 8
+    up, lo = z[:, :64].sum(1) / 8, z[:, 64:].sum(1) / 8
+    for i in starts:
+        assert up[i - 20:i + 60].max() < 6 and lo[i - 20:i + 60].max() < 6, i

@@ -154,10 +154,13 @@ python3 tools/rfi_impulses.py step2.fil step3.fil --thresholds 10 8 6 5
    uno gia' preso. Un evento sulla traccia dispersa di un evento gia' protetto dello stesso gruppo e'
    protetto anch'esso (i pezzi di un FRB visto a DM 0 in piu' sottobande).
 3. **Sostituzione** con rumore del solo rettangolo tempo x sottobande colpite, al **livello locale**:
-   per ogni canale la media troncata dei campioni ai due lati del rettangolo (escluse le righe di altri
-   eventi), interpolata linearmente; cosi' un impulso su un fondo rialzato non lascia un "buco" con
-   bordi netti (che dedisperso creerebbe nuovi candidati). Tutti gli altri campioni restano identici
-   all'input.
+   per ogni canale primo quartile + 0.674 sigma dei campioni ai due lati del rettangolo, interpolato
+   linearmente (l'RFI aggiunge solo potenza: il primo quartile resta quello del fondo finche' gli
+   impulsi vicini occupano meno di ~3/4 del tempo); cosi' un impulso su un fondo rialzato non lascia un
+   "buco" con bordi netti (che dedisperso creerebbe nuovi candidati). Il rettangolo viene esteso
+   finche' le righe adiacenti hanno ancora segnale nelle sottobande sostituite: i bordi di un impulso
+   possono essere sfasati tra sottobande, e un bordo rimasto fuori diventerebbe un nuovo impulso di
+   1-2 campioni. Tutti gli altri campioni restano identici all'input.
 
 Prodotti: `step3.fil.impulses.json` (eventi rimossi/protetti, frazione di dati sostituita) e
 `step3.fil.impulses_events.csv`.

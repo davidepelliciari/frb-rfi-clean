@@ -28,10 +28,12 @@ Un solo passaggio a blocchi (con margini di lettura per boxcar e veto):
    (un FRB visto a DM 0 in piu' sottobande produce piu' eventi lungo la stessa traccia).
 4. Sostituzione: per gli eventi non protetti, il rettangolo tempo (con margine) x canali delle
    sottobande colpite (tutti i canali se l'evento e' a banda intera o colpisce almeno meta' delle
-   sottobande) viene sostituito con rumore gaussiano. Il livello e' locale: per ogni canale la media
-   troncata (50% centrale) dei campioni sui due lati del rettangolo (escludendo le righe coperte da
-   altri eventi), interpolata linearmente;
-   la sigma e' quella robusta del canale nel blocco. Cosi' un impulso su un fondo rialzato (emissione
+   sottobande) viene sostituito con rumore gaussiano. Il livello e' locale: per ogni canale il primo
+   quartile + 0.674 sigma dei campioni sui due lati del rettangolo (insensibile agli impulsi vicini
+   finche' occupano meno di ~3/4 del tempo), interpolato linearmente;
+   la sigma e' quella robusta del canale nel blocco.
+   Il rettangolo viene esteso finche' le righe adiacenti hanno ancora segnale nelle sottobande
+   sostituite (i bordi di un impulso possono essere sfasati tra sottobande). Cosi' un impulso su un fondo rialzato (emissione
    lunga, variazioni lente) non lascia un "buco" con bordi netti, che dedisperso creerebbe nuovi
    candidati. Tutti gli altri campioni restano identici all'input.
 """
@@ -68,6 +70,9 @@ class ImpulseConfig:
     narrow_frac: float = 0.5          # scorciatoia: larghezza < narrow_frac x dispersione a dm_min -> RFI
     track_z: float = 2.0              # S/N per sottobanda lungo la traccia per contare come "segnale"
     track_frac: float = 0.4           # frazione minima di sottobande con segnale lungo la traccia protetta
+    grow: bool = True                 # estende il rettangolo finche' il segnale nelle sottobande sostituite e' sopra soglia
+    grow_snr: float = 3.5             # soglia per campione sulla serie combinata delle sottobande sostituite
+    grow_sub: float = 5.0             # ... o su una singola sottobanda sostituita
     local_level: bool = True          # livello di sostituzione dai lati del rettangolo (False: mediana del blocco)
     flank: float = 0.004              # lunghezza minima di ciascun lato per il livello locale [s]
     flank_w: float = 2.0              # ... e in unita' della larghezza dell'evento
@@ -328,33 +333,48 @@ def _veto(ev, det, geo, cfg):
                          track_frac=track_frac, t0=bt0)
 
 
-def _trimmed_mean(v):
-    n = v.shape[0]
-    k = n // 4
-    s = np.sort(v, 0)
-    return s[k:n - k].mean(0)
+def _grow(X, subs, A, B, maxext, cfg):
+    """Estende [A, B) a sinistra e a destra finche' le righe adiacenti mostrano segnale nelle sottobande
+    `subs` (serie a rumore unitario per campione): i bordi di un impulso possono essere sfasati tra
+    sottobande, e un bordo rimasto fuori dal rettangolo diventa un nuovo impulso di 1-2 campioni."""
+    n = X.shape[0]
+    sub = X[:, 1 + subs]
+    k = np.sqrt(subs.size)
+
+    def hot(i):
+        r = sub[i]
+        return r.sum() / k > cfg.grow_snr or r.max() > cfg.grow_sub
+
+    A, B = max(0, A), min(n, B)
+    a0, b0 = A, B
+    while A > 0 and a0 - A < maxext and hot(A - 1):
+        A -= 1
+    while B < n and B - b0 < maxext and hot(B):
+        B += 1
+    # un campione di margine oltre l'ultimo campione caldo
+    return max(0, A - 1 if A < a0 else A), min(n, B + 1 if B > b0 else B)
 
 
-def _local_level(xf, chans, A, B, L, fallback, hot=None):
-    """Livello per canale nelle righe [A, B) di xf: media troncata di L righe "pulite" (non coperte da
-    altri eventi, maschera `hot`) a sinistra di A e a destra di B, cercate fino a 8L righe di distanza;
-    interpolazione lineare tra i centri dei due lati. Restituisce (B-A, nchans) o fallback (nchans,)."""
+def _local_level(xf, chans, A, B, L, fallback, sig):
+    """Livello per canale nelle righe [A, B) di xf, dalle L righe adiacenti a sinistra di A e a destra
+    di B, interpolato linearmente tra i centri dei due lati. Restituisce (B-A, nchans) o fallback (nchans,).
+
+    Stimatore: primo quartile + 0.674 sigma (sigma robusta del canale nel blocco). L'RFI aggiunge solo
+    potenza, quindi il primo quartile resta quello del fondo finche' gli impulsi occupano meno di ~3/4
+    dei campioni (la media troncata o la mediana no: con treni fitti salgono; e prendere solo le righe
+    senza eventi seleziona le piu' basse e da' un livello sottostimato, cioe' un "buco"). Su un fondo
+    rialzato (emissione lunga) da' il livello del fondo, che quindi non presenta bordi."""
     n = xf.shape[0]
+    q = 0.6745 * sig[chans]
 
-    def side(lo, hi, from_end):
+    def side(lo, hi):
         lo, hi = max(0, lo), min(n, hi)
         if hi - lo < 8:
             return None, None
-        rows = np.arange(lo, hi)
-        if hot is not None:
-            rows = rows[~hot[lo:hi]]
-        rows = rows[-L:] if from_end else rows[:L]
-        if rows.size < 8:
-            return None, None
-        return _trimmed_mean(xf[rows][:, chans]), rows.mean()
+        return np.percentile(xf[lo:hi][:, chans], 25, axis=0) + q, (lo + hi) / 2.0
 
-    l, cl = side(A - 8 * L, A, True)
-    r, cr = side(B, B + 8 * L, False)
+    l, cl = side(A - L, A)
+    r, cr = side(B, B + L)
     if l is None and r is None:
         return fallback
     if l is None or r is None:
@@ -408,10 +428,6 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
             evs = _events(det, geo, cfg, c0 - e0, c1 - e0)
             out_blk = raw[c0 - e0:c1 - e0].copy()
             tracks = {}
-            hot = np.zeros(xf.shape[0], bool)      # righe coperte da eventi: escluse dal calcolo del livello locale
-            for ev in evs:
-                mh = max(2, int(cfg.margin_frac * ev["W"]))
-                hot[max(0, ev["a"] - mh):ev["b"] + mh] = True
             for ev in evs:
                 stats["events"] += 1
                 tv = time.time()
@@ -434,11 +450,16 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
                 stats["removed"] += 1
                 W = ev["W"]
                 m = max(2, int(cfg.margin_frac * W))
-                a = max(c0 - e0, ev["a"] - m) - (c0 - e0)
-                b = min(c1 - e0, ev["b"] + m) - (c0 - e0)
+                full = ev["col"] == 0 or ev["hits"].mean() >= cfg.full_frac or not ev["hits"].any()
+                subs = np.flatnonzero(geo.nlive > 0) if full else np.flatnonzero(ev["hits"] & (geo.nlive > 0))
+                A_, B_ = ev["a"] - m, ev["b"] + m
+                if cfg.grow and subs.size:
+                    A_, B_ = _grow(X, subs, A_, B_, max(4 * W, 64), cfg)
+                a = max(c0 - e0, A_) - (c0 - e0)
+                b = min(c1 - e0, B_) - (c0 - e0)
                 if b <= a:
                     continue
-                if ev["col"] == 0 or ev["hits"].mean() >= cfg.full_frac or not ev["hits"].any():
+                if full:
                     chans = np.flatnonzero(live)
                 else:
                     chans = np.flatnonzero(live & ev["hits"][geo.sub_of])
@@ -447,7 +468,7 @@ def run_impulses(path, out, cfg: ImpulseConfig | None = None, verbose=True, repo
                 level = med[chans]
                 if cfg.local_level:
                     level = _local_level(xf, chans, a + (c0 - e0), b + (c0 - e0),
-                                         max(int(cfg.flank / ts), int(cfg.flank_w * W), 8), level, hot)
+                                         max(int(cfg.flank / ts), int(cfg.flank_w * W), 8), level, sig)
                 noise = level + sig[chans] * rng.standard_normal((b - a, chans.size)).astype(np.float32)
                 if fb.nbits != 32:
                     noise = np.clip(np.rint(noise), lo, hi)
