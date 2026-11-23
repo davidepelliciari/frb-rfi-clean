@@ -19,6 +19,7 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `tools/rfi_periodic.py` | **step 2**: sottrazione canale per canale delle componenti periodiche (default 50 Hz e armoniche) |
 | `tools/rfi_impulses.py` | **step 3**: rimozione degli impulsi a DM 0 (radar, impulsi a banda intera o parziale) con veto di dispersione |
 | `tools/rfi_commonmode.py` | **step 4**: sottrazione del rumore di modo comune (segnale comune a tutti i canali), ultimo passo prima della ricerca |
+| `tools/rfi_pipeline.py` | **pipeline completa** (step 1 -> 2 -> 3 -> 4) con un solo comando: file intermedi gestiti, log e riassunto unico |
 | `tools/plot_cand.py` | ispezione di un candidato dal filterbank (profilo, spettri dinamici dedisperso e a DM 0, piano DM-tempo), anche su piu' file affiancati |
 | `tools/plot_dynspec.py` | spettri dinamici (in conteggi o in sigma), serie temporali e spettri di uno o piu' file, uno sotto l'altro con lo stesso asse dei tempi e la stessa scala di colori (DM, finestra, risoluzione, canali, inizio a scelta) |
 | `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), step 1 (`clean.py`), step 2 (`periodic.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
@@ -178,6 +179,22 @@ protetto se la sua larghezza e' al massimo ~0.7 volte lo sweep del suo DM (con 6
 rimosso. Su treni di impulsi sintetici simili al radar A reale (3 gruppi di 6 impulsi) restano 0 impulsi
 su 54 (prima della correzione per-impulso: 46 su 54).
 Gli FRB deboli, non rivelati a DM 0, non vengono toccati.
+
+## Pipeline completa con un solo comando
+
+```bash
+python3 tools/rfi_pipeline.py /data/obs/x_processed.fil /data/CLEAN/obs/        # output: /data/CLEAN/obs/x_processed.fil
+python3 tools/rfi_pipeline.py in.fil out.fil --keep --step3-args="--thresholds 10 8 6"
+python3 tools/rfi_pipeline.py in.fil out.fil --tmax 60                           # prova sui primi 60 s
+```
+
+Esegue gli step 1-4 nell'ordine e scrive, accanto all'output, la cartella `OUTPUT.pipeline/` con
+`pipeline.json` (comando, versione del codice, tempi e numeri principali di ogni step), il log di ogni
+step (`stepN.log`) e la sua diagnostica (`stepN.clean.json`, `stepN.periodic.json`, ...). I file
+intermedi sono grandi quanto l'input: senza `--keep` ne esistono al massimo due alla volta. Si ferma
+al primo step che fallisce, indicando il log. Il risultato e' identico a quello degli strumenti
+lanciati a mano uno dopo l'altro (`tests/test_pipeline.py`). Le opzioni dei singoli step si passano
+con `--stepN-args="..."` (con il segno `=`, perche' il valore inizia con un trattino).
 
 ## Step 4: rumore di modo comune
 
