@@ -1,0 +1,530 @@
+% =====================================================================================
+% Parte II: la pipeline di pulizia (incluso da report.tex)
+% =====================================================================================
+\FloatBarrier
+\section{La pipeline di pulizia}
+\label{sec:cleanpipe}
+
+Sulla base dell'analisi iniziale (Sez.~\ref{sec:results} e~\ref{sec:discussion}) è stata costruita una pipeline
+in quattro passi, da eseguire in quest'ordine prima della ricerca con \file{FRB_HF_Finder.py}:
+\begin{center}
+\begin{tabular}{llp{9.2cm}}
+\toprule
+Step & Strumento & Cosa rimuove \\
+\midrule
+1 & \file{tools/rfi_clean.py} & canali cattivi, salti di guadagno, variazioni lente del livello e del rumore, celle
+  tempo--frequenza con varianza anomala \\
+2 & \file{tools/rfi_periodic.py} & RFI periodico (rete elettrica a \SI{50}{\hertz} e armoniche, e qualsiasi altra
+  famiglia di righe) \\
+3 & \file{tools/rfi_impulses.py} & impulsi a DM 0 a banda intera o parziale (radar), con veto di dispersione \\
+4 & \file{tools/rfi_commonmode.py} & rumore di modo comune, cioè la componente correlata tra tutti i canali \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Principi comuni.}
+\begin{itemize}
+  \item \textbf{Generalità.} Nessuno step contiene valori specifici di questa osservazione. Le soglie sono espresse in
+    sigma, frazioni o secondi; le grandezze strumentali (campionamento, frequenze, numero di canali, numero di bit,
+    ritardi di dispersione) sono lette dall'header o stimate dai dati. I valori di default sono stati scelti e
+    validati su dati sintetici costruiti con lo stesso setup di Medicina (banda L, \SI{64}{\mega\hertz}, 256 canali,
+    \SIrange{16}{64}{\micro\second}).
+  \item \textbf{Protezione dei segnali dispersi.} Ogni step che sostituisce o sottrae dati ha un meccanismo che non
+    tocca, o tocca in misura nota, un segnale disperso: veto di dispersione negli step 1 e 3, test di dispersione sulle
+    famiglie periodiche nello step 2, perdita limitata alla frazione larghezza/sweep nello step 4.
+  \item \textbf{Formato invariato.} L'output di ogni step è un filterbank con lo stesso header e lo stesso numero di
+    bit; con dati interi l'arrotondamento è stocastico (\emph{dithering}), così le correzioni inferiori a un
+    conteggio sono conservate in media. Ogni step scrive un riassunto (\file{.json}) e i dati diagnostici
+    (\file{.npz}, \file{.csv}).
+  \item \textbf{Memoria e tempi.} Tutti gli step leggono il file a blocchi: la memoria non dipende dalla dimensione
+    del file. Sul file intero (\SI{19}{\giga\byte}) ogni step richiede da circa \SI{20}{} a \SI{35}{\minute}.
+  \item \textbf{Validazione.} Ogni step ha test automatici su dati sintetici (\file{tests/}, 47 test), che verificano sia
+    la rimozione degli RFI sia la conservazione dell'S/N di FRB iniettati.
+\end{itemize}
+
+L'ordine non è arbitrario. Lo step 1 rende i canali confrontabili (stessa scala) e maschera quelli inutilizzabili:
+tutti gli step successivi ne hanno bisogno. Gli step 2 e 3 lavorano sulle serie a DM 0 (banda intera e sottobande),
+che lo step 4 azzera per costruzione, e lo step 3 toglie gli impulsi a banda parziale che una sottrazione del modo
+comune trasformerebbe in impronte negative negli altri canali. Lo step 4 è quindi l'ultimo.
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Step 1: maschera, normalizzazione e celle anomale}
+\label{sec:step1}
+
+\paragraph{Metodo.} Due passaggi sul file.
+\begin{enumerate}
+  \item \textbf{Statistiche.} Per ogni canale e finestra di \SI{0.2}{\second} si stimano livello e rumore con media e
+    deviazione standard troncate a $3\sigma$ robuste, su un sottocampione. Le serie di livello e rumore sono filtrate con
+    una mediana mobile su 5 finestre, che conserva i gradini ma ignora i disturbi più brevi. Dagli stessi blocchi si
+    ricava la \textbf{maschera automatica}: un canale è mascherato se, nei blocchi da \SI{4}{\second}, il suo rumore, la
+    curtosi o la frazione di campioni anomali si discostano dagli altri canali con $z$ robusto $>5$.
+  \item \textbf{Salti di guadagno.} Prima delle statistiche si cercano i salti di livello con un filtro a gradino
+    (due lati da \SI{20}{\milli\second}, risoluzione \SI{0.5}{\milli\second}) su 16 sottobande, con soglia $6\sigma$ e un
+    test di persistenza: il nuovo livello deve durare almeno \SI{0.2}{\second}, cosa che un burst non fa. Le finestre
+    delle statistiche non attraversano mai un salto, e la normalizzazione è interpolata solo all'interno di ciascun
+    segmento.
+  \item \textbf{Pulizia.} Ogni campione è normalizzato, $z=(x-\text{livello}(t))/\text{rumore}(t)$, con livello e
+    rumore interpolati a \SI{1}{\milli\second}. I dati sono divisi in celle di \SI{8}{\milli\second} per canale; si
+    sostituiscono con rumore gaussiano le celle con varianza anomala oltre $6\sigma$ robuste. La varianza è stimata
+    dalle \emph{differenze} tra campioni consecutivi, quindi un segnale liscio come un FRB largo più di pochi campioni
+    quasi non la modifica. Se in un intervallo sono anomali più della metà dei canali si sostituisce l'intero
+    intervallo, ma solo dopo un \textbf{veto di dispersione}: si protegge l'intervallo se esiste una traccia con
+    DM\,$\geq$\,15 il cui S/N supera di 1.2 volte quello a DM 0 ed è almeno 7.
+  \item \textbf{Uscita.} $y=128+8z$ per dati a 8 bit (dinamica $\pm16\sigma$); i canali mascherati sono costanti.
+\end{enumerate}
+
+\paragraph{Risultati su \file{ag278m_mc_no0004}.}
+\begin{itemize}
+  \item Maschera: canali 121--127 (\SIrange{1414.4}{1415.9}{\mega\hertz}) e 185 (\SI{1399.9}{\mega\hertz}), in accordo
+    con l'analisi iniziale (Sez.~\ref{sec:results}).
+  \item Trovati 1366 salti di guadagno reali, distanziati in media di circa \SI{1}{\second} e più forti ai bordi della
+    banda, compatibili con un controllo automatico del guadagno. \ipotesi{L'attribuzione al controllo automatico del
+    guadagno del backend non è verificata con chi conosce lo strumento.}
+  \item Ricerca dopo il solo step 1 (prima versione): da 2399 a 816 candidati; i 7 episodi dell'analisi iniziale
+    (Sez.~\ref{sec:episodes}) scompaiono tutti; la frazione di candidati stretti ($\leq2^3$ campioni) scende dall'81\%
+    al 16\%. Due candidati superano la soglia di FETCH: all'ispezione sono RFI.
+\end{itemize}
+
+\paragraph{Correzioni durante lo sviluppo.} La prima versione non gestiva i salti di guadagno (da cui la ricerca dei
+salti); distruggeva i burst più brillanti (da cui la varianza dalle differenze, il test di persistenza, l'uscita a
+$\pm16\sigma$ e il veto di dispersione); la maschera era poco sensibile sui dati reali (da cui le statistiche per
+blocchi come nel censimento); il veto era lento (da cui una griglia di DM più rada con confronto a basso DM).
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Step 2: RFI periodico}
+\label{sec:step2}
+
+\paragraph{Metodo.} Completamente automatico: non richiede di indicare le frequenze.
+\begin{enumerate}
+  \item \textbf{Spettro.} Spettro di potenza (Welch, finestra di Hann) della serie a DM 0 a banda intera, alla
+    risoluzione nativa fino alla frequenza di Nyquist, quindi senza aliasing. Le righe sono i massimi locali del
+    rapporto spettro/continuo (mediana mobile su \SI{2}{\hertz}) oltre 8.
+  \item \textbf{Famiglie armoniche.} Per ogni fondamentale candidata $f_0$ si sommano i pesi delle righe che cadono su
+    un'armonica $n f_0$, meno il contributo atteso per caso; si sceglie la famiglia con l'eccesso maggiore, si tolgono
+    le sue righe e si ripete.
+  \item \textbf{Affinamento.} Si piega la serie a tratti e si misura lo spostamento del profilo nel tempo: la
+    frequenza viene corretta con precisione $\sim t_{\rm samp}/(P\cdot T)$.
+  \item \textbf{Test di dispersione.} Si piegano quattro quarti di banda e si misura il ritardo tra i profili. Se è
+    compatibile con una sorgente dispersa (DM\,$\geq$\,2) la famiglia \emph{non} viene sottratta: potrebbe essere una
+    pulsar.
+  \item \textbf{Sottrazione.} Per ogni canale e tratto (almeno 200 periodi) si sottrae il profilo medio, con clipping, a
+    risoluzione nativa in fase. È equivalente a togliere la potenza a tutte le armoniche $n f_0$ fino a Nyquist, in una
+    banda $1/T_{\rm tratto}$. Un burst contribuisce al profilo per circa $1/N_{\rm periodi}$ della sua ampiezza.
+  \item \textbf{Verifica.} Spettro dell'output e, se restano famiglie sottraibili, una seconda iterazione.
+\end{enumerate}
+
+\paragraph{Risultati.} Trovata una sola famiglia, di fondamentale $f_0=\SI{50.0000006}{\hertz}$ (rete elettrica), con
+55 righe fino a circa \SI{30}{\kilo\hertz}. Le righe oltre soglia passano da 56 a 1; resta solo una riga a
+\SI{31003}{\hertz}, con periodo di circa due campioni, irrilevante per la ricerca (Fig.~\ref{fig:step2}).
+La famiglia portava il 45.8\% della varianza della serie a DM 0; il rumore della serie a DM 0 su \SI{1}{\milli\second}
+scende del 14.5\%, la correlazione media tra canali da 0.31 a 0.26, la frazione di tempo occupata da eventi a DM 0
+dal 7.03\% al 6.30\%. La ricerca dopo step 1 (versione finale) e step 2 dà 749 candidati.
+Su dati sintetici con RFI a \SI{50}{\hertz}, un treno a \SI{166.67}{\hertz} e una pulsar (DM 40), le 190 righe
+scendono a 0, la pulsar è riconosciuta e lasciata intatta, e gli FRB conservano almeno il 95\% dell'S/N.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.9\textwidth]{fig/pipeline/step2_periodic_spectrum.png}
+\caption{Step 2: spettro di potenza della serie a DM 0 a banda intera prima (blu) e dopo (arancione) la sottrazione
+della famiglia a \SI{50}{\hertz}; in basso il rapporto dopo/prima. Le armoniche fino a \SI{30}{\kilo\hertz} sono ridotte
+di un fattore tra 10 e 300.}
+\label{fig:step2}
+\end{figure}
+
+\paragraph{Correzioni durante lo sviluppo.} L'arrotondamento deterministico annullava le correzioni inferiori a un
+conteggio (da cui il dithering). Un profilo a 64 intervalli di fase, a gradini, creava righe fittizie (da cui la
+risoluzione nativa in fase). Una presunta famiglia a \SI{166.67}{\hertz} era aliasing dello spettro decimato del
+censimento (da cui lo spettro a risoluzione nativa). Una fondamentale sottomultipla rubava la riga a \SI{50}{\hertz}
+di una pulsar sintetica (da cui l'interpolazione delle frequenze delle righe e la protezione delle famiglie non
+testate).
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Step 3: impulsi a DM 0}
+\label{sec:step3}
+
+\paragraph{Metodo (versione finale).}
+\begin{enumerate}
+  \item \textbf{Rivelazione.} Serie a DM 0 della banda intera e di 16 sottobande, a rumore unitario. Boxcar da 1
+    campione a \SI{32}{\milli\second}, con \textbf{soglia iterativa} (S/N 8, poi 6): la sigma robusta di ogni serie
+    è ristimata escludendo i tratti già oltre soglia.
+  \item \textbf{Un evento per impulso.} I rilevamenti sovrapposti nel tempo formano un gruppo; dentro il gruppo si
+    prendono i boxcar in ordine di S/N decrescente, scartando quelli che si sovrappongono a uno già preso. Ogni impulso di
+    un treno (radar) diventa così un evento separato.
+  \item \textbf{Veto di dispersione.}
+    \begin{itemize}
+      \item Un evento più stretto di metà della dispersione a DM 15 nella serie in cui è visto non può essere un FRB a
+        DM\,$\geq$\,15: è RFI senza altri calcoli.
+      \item Altrimenti si cerca una traccia dispersa che passi per l'evento, su una griglia di DM (0--1000) e di larghezze
+        (da $W/16$ a $2W$). L'evento è protetto se il miglior S/N a DM\,$\geq$\,15 supera di 1.05 volte quello a DM\,$<$\,15,
+        è almeno 7, e lungo la traccia almeno il 40\% delle sottobande ha S/N\,$>$\,2. Per gli eventi a banda parziale si
+        usano solo le sottobande non colpite.
+      \item Se la traccia protetta non contiene, entro il proprio sweep, tutti gli altri impulsi a banda larga del
+        gruppo, il veto è ripetuto con quegli impulsi azzerati: una traccia che attraversa impulsi diversi di un treno in
+        sottobande diverse imita un FRB.
+      \item Un evento che cade sulla traccia di un evento già protetto dello stesso gruppo è protetto anch'esso (i pezzi
+        di un FRB visto a DM 0 in più sottobande).
+    \end{itemize}
+  \item \textbf{Sostituzione.} Il rettangolo tempo $\times$ sottobande colpite (tutti i canali se l'evento colpisce
+    almeno metà delle sottobande), con un margine di $W/4$, è esteso finché le righe adiacenti hanno ancora segnale nelle
+    sottobande sostituite (S/N\,$>$\,3.5 sulla serie combinata o $>$\,5 su una sottobanda): i bordi di un impulso possono
+    essere sfasati tra sottobande. Il rettangolo è riempito con rumore gaussiano al livello del blocco, oppure al livello
+    locale (media delle righe vicine senza eventi) se questo differisce significativamente ($z>5$), come per un impulso su
+    un fondo rialzato. Tutti gli altri campioni restano identici.
+\end{enumerate}
+
+\paragraph{Evoluzione.} Lo step 3 è stato raffinato in quattro versioni, ciascuna verificata con la ricerca sul file
+intero (Tab.~\ref{tab:step3}):
+\begin{itemize}
+  \item \textbf{v1}: sostituiva solo il boxcar migliore di ogni gruppo, quindi in un treno radar restava quasi tutto
+    (nel passaggio del radar A a \SI{673.6}{\second} uno solo dei circa 20 impulsi). Il livello di sostituzione era la
+    mediana del blocco, che su un fondo rialzato lasciava un ``buco'' con bordi netti: a \SI{568.709}{\second} questo
+    buco generava un candidato nuovo con S/N 13.9.
+  \item \textbf{v2}: un evento per impulso e livello locale. L'eccesso di candidati attorno al radar B scende da 100 a 33,
+    ma i bordi degli impulsi sfasati tra le due metà della banda lasciavano ``schegge'' di 1--2 campioni (796 eventi a DM 0
+    con S/N\,$\geq$\,10, il 91\% ai passaggi del radar A).
+  \item \textbf{v3}: estensione dei rettangoli sui bordi (le schegge scendono a 14). Ma, ora che ogni impulso passava dal
+    veto da solo, tracce disperse che collegavano impulsi diversi di un treno proteggevano 5856 eventi; e il livello
+    locale, stimato con il primo quartile, era spostato verso l'alto di circa $0.3\sigma$ con treni densi, un errore che
+    sommato su circa 250 canali crea nuovi impulsi.
+  \item \textbf{v4} (finale): veto ripetuto con gli altri impulsi del treno azzerati e livello del blocco salvo
+    differenze significative. Le protezioni scendono a 1221.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\caption{Ricerca sul file intero (S/N\,$>$\,8, DM\,$>$\,28, cioè la selezione di produzione) dopo ciascuna versione
+della pipeline. ``Radar A/B'': candidati entro la finestra dei passaggi radar (per caso circa il 4\%).
+``Heimdall, tutti'': righe del file \file{.cand} completo.}
+\label{tab:step3}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+ & originale & step 1 (v. iniziale) & step 1+2 & +3 v1 & +3 v2 & \textbf{+3 v4} \\
+\midrule
+Candidati & 2399 & 816 & 749 & 591 & 341 & \textbf{338} \\
+Heimdall, tutti & -- & 43184 & 42275 & 35021 & 28054 & \textbf{28344} \\
+S/N\,$>$\,8 con DM\,$<$\,28 & -- & 109 & 96 & 77 & 36 & \textbf{10} \\
+Stretti ($\leq2^3$ campioni) & 81\% & 16\% & 14\% & 10\% & 9\% & \textbf{4\%} \\
+Attorno al radar A & 4.3\% & 7.6\% & 4.7\% & 5.4\% & 8.2\% & \textbf{4.4\%} \\
+Attorno al radar B & 3.8\% & 19.6\% & 15.5\% & 16.9\% & 9.7\% & \textbf{7.4\%} \\
+FETCH\,$\geq$\,0.7 & 0 & 2 & 0 & 1 & 0 & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Risultati della versione finale.} Su \SI{1199}{\second}: 72747 eventi a DM 0, 71526 rimossi (40698 con il
+solo criterio di larghezza) e 1221 protetti; dati sostituiti 3.4\%; \SI{35}{\minute} di calcolo, di cui 9 nel veto.
+Negli eventi a DM 0 del censimento, quelli con S/N\,$\geq$\,30 passano da 1105 (dopo lo step 2) a 8, e quelli tipici
+dei radar (A: banda intera; B: metà bassa della banda) da 498 e 328 a 0; la frazione di tempo occupata da eventi scende
+dal 6.3\% al 3.3\%. Il passaggio del radar A a \SI{673.6}{\second} è rimosso del tutto (Fig.~\ref{fig:radarA}).
+L'unico candidato FETCH ``gold'' comparso con la v1 (\SI{657.412}{\second}, DM 45.8) era il bordo di un treno di
+impulsi a banda stretta: con la v4 il treno è rimosso e il candidato scompare.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/pipeline/radarA_673_step3.png}
+\caption{Passaggio del radar A a \SI{673.6}{\second}, mostrato con \file{tools/plot_cand.py} nel file originale, dopo
+lo step 2 e dopo lo step 3 (v4). Dall'alto: profilo dedisperso a DM 50 (boxcar \SI{0.5}{\milli\second}), spettro
+dinamico dedisperso, spettro dinamico a DM 0, piano DM--tempo. I tre gruppi di impulsi radar (S/N 46 dopo lo step 2)
+spariscono dopo lo step 3 (S/N 1.6).}
+\label{fig:radarA}
+\end{figure}
+
+\paragraph{Protezione degli FRB.} Su dati sintetici con radar e treni di impulsi, per FRB abbastanza brillanti da
+essere visti anche a DM 0, il rapporto tra S/N dopo lo step 3 e S/N senza RFI è:
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\toprule
+DM & \SI{0.5}{\milli\second} & \SI{1}{\milli\second} & \SI{4}{\milli\second} & \SI{16}{\milli\second} \\
+\midrule
+20 & 1.00 & 1.02 & 0.08 & 0.02 \\
+30 & 1.00 & 1.00 & 1.00 & 0.05 \\
+50 & 1.00 & 1.00 & 1.00 & 0.09 \\
+100 & 0.97 & 1.00 & 1.00 & 1.00 \\
+300 & 1.00 & 0.98 & 1.00 & 1.01 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Il limite è fisico: un burst più largo di circa 0.7 volte il proprio sweep (\SI{5.6}{\milli\second} a DM 30,
+\SI{9.4}{\milli\second} a DM 50) non è distinguibile da un impulso terrestre a DM 0. Gli FRB deboli, non rivelati a DM 0,
+non vengono toccati. Sui treni sintetici densi e irregolari restano 1 impulso su 211 e nessuna protezione spuria.
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Step 4: rumore di modo comune}
+\label{sec:step4}
+
+\paragraph{Motivazione.} Il pilota della campagna di iniezione (Sez.~\ref{sec:completeness}) ha mostrato che, anche dopo
+gli step 1--3, Heimdall misura sui dati reali circa metà dell'S/N atteso, mentre su rumore bianco con lo stesso
+bandpass ne misura il 108\%. Il rapporto cresce con il DM (0.43 a DM 100, 0.62 a DM 400--700), come per un rumore comune
+a tutti i canali che la dedispersione disperde tanto meglio quanto più lungo è lo sweep. Il censimento lo conferma: la
+serie a DM 0 a banda intera ha un rumore 4.4 volte quello atteso per canali indipendenti su \SI{1}{\milli\second}, 11 volte
+su \SI{16}{\milli\second} e 17 volte su \SI{65}{\milli\second}. È un rumore fortemente correlato tra i canali e
+``rosso'', cioè dominante sulle scale lunghe.
+
+\paragraph{Metodo.} Per ogni canale attivo, sui dati normalizzati $z_c=(x_c-\mu_c(t))/\sigma_c$,
+\begin{equation}
+z_c(t)=g_c\,m(t)+n_c(t),\qquad m(t)=\langle z_c(t)\rangle_c ,
+\end{equation}
+dove $m(t)$ è il modo comune (media su tutti i canali attivi) e $g_c$ l'accoppiamento del canale. L'output è
+$x_c-\sigma_c g_c m(t)$.
+\begin{itemize}
+  \item $g_c$ è stimato per regressione di $z_c$ su $m$ in blocchi di \SI{4}{\second}, a risoluzione di
+    \SI{1}{\milli\second}, con $m$ calcolato escludendo il canale stesso (altrimenti, con un modo comune debole, $g_c$
+    tenderebbe a 1). Con \texttt{-{}-mode zerodm} si usa $g_c=1$ per tutti i canali (filtro a DM zero, Eatough et al.
+    2009).
+  \item Il livello $\mu_c(t)$ è la \emph{media} del canale nel blocco, interpolata linearmente tra i centri dei blocchi.
+    Con la media il modo comune ha media nulla, quindi la sottrazione non introduce offset; con l'interpolazione il
+    livello è continuo, quindi non introduce scalini tra i blocchi.
+  \item Un FRB perde circa la frazione larghezza/sweep del proprio segnale: in ogni istante occupa solo quella frazione
+    dei canali, che entra nella media. È trascurabile per i burst stretti ad alto DM (circa 2\% per \SI{1}{\milli\second}
+    a DM 250), grande per quelli larghi a basso DM.
+\end{itemize}
+
+\paragraph{Validazione su dati sintetici} (modo comune rosso, accoppiamento variabile lungo la banda, eccesso di rumore
+6 a DM 0). S/N di FRB senza modo comune, con modo comune e dopo lo step 4:
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+ & solo rumore bianco & con modo comune & dopo step 4 \\
+\midrule
+\SI{1}{\milli\second}, DM 30--700 & 11.0--12.7 & 1.7--5.9 & 10.3--12.5 \\
+\SI{4}{\milli\second}, DM\,$\geq$\,100 & 12.6--16.4 & 1.0--5.2 & 11.1--15.0 \\
+\SI{16}{\milli\second}, DM 30--50 & 28.9--30.5 & 0.8--1.6 & 3.2--3.8 \\
+\SI{16}{\milli\second}, DM 300--700 & 30.1--31.5 & 4.9--5.4 & 21.6--22.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Su rumore bianco puro lo step 4 non cambia l'S/N (rapporto 0.94--1.02).
+
+\paragraph{Risultati.} Sul tratto del pilota (\SIrange{500}{800}{\second}) l'eccesso di rumore a DM 0 su
+\SI{1}{\milli\second} era 4.47. Gli accoppiamenti stimati hanno mediana 0.75 e una dispersione ampia (dal 10° al 90°
+percentile: 0.36--1.70): un filtro a DM zero classico, con $g_c=1$, avrebbe sottratto troppo in alcuni canali e troppo
+poco in altri. L'eccesso della differenza tra metà alta e metà bassa della banda scende solo da 2.48 a 2.03: resta una
+parte correlata che un solo modo comune non descrive. Nel pilota lo step 4 porta i burst rivelati da 73 a 103 su 133 e
+il rapporto tra S/N misurato e atteso da circa 0.5 a 0.85--0.92 (Sez.~\ref{sec:completeness}).
+
+\paragraph{Una correzione importante.} La prima versione usava come livello del canale la \emph{mediana} del blocco.
+Nei dati reali, a 8 bit e con una coda positiva di RFI residuo, la media di ogni canale supera la mediana di circa
+$0.17\sigma$. Il modo comune aveva quindi in ogni blocco una media diversa da zero, che veniva sottratta moltiplicata
+per $g_c$: uno scalino diverso per blocco e per canale. Lo spettro dinamico del file intero mostrava fasce larghe
+qualche MHz e strisce verticali assenti prima (Fig.~\ref{fig:step4v1}); la struttura lenta per canale saliva del 46\%
+(da $0.022\sigma$ a $0.033\sigma$ sulle medie a \SI{0.6}{\second}) e i salti tra intervalli successivi erano maggiori ai
+confini dei blocchi. Con la media interpolata, su dati sintetici costruiti allo stesso modo, lo scalino introdotto tra
+blocchi scende da $0.011\sigma$ a $0.0008\sigma$, e il recupero di S/N resta invariato. I risultati del pilota citati
+sopra sono stati ottenuti con la prima versione e vanno ripetuti.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/pipeline/dynspec_step3_vs_step4v1.png}
+\caption{Spettro dinamico del file intero (medie su \SI{0.6}{\second}, livello costante di ogni canale tolto) dopo lo
+step 3, dopo la \emph{prima} versione dello step 4, e loro differenza. Le fasce e le strisce del pannello centrale sono
+introdotte dallo step 4 (scalini per blocco e canale) e sono state eliminate nella versione attuale.}
+\label{fig:step4v1}
+\end{figure}
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Strumenti di diagnostica}
+\label{sec:diag}
+
+\begin{itemize}
+  \item \file{tools/rfi_survey.py -{}-spectrum}: al censimento si aggiunge lo spettro di potenza della serie a DM 0
+    (banda intera e 16 sottobande) e l'elenco delle righe con la loro famiglia armonica.
+    \file{tools/compare_spectra.py} confronta due spettri e, per ogni riga, riporta la potenza rimasta.
+  \item \file{tools/plot_cand.py}: ispezione di un candidato direttamente dal filterbank, su più file affiancati
+    (profilo dedisperso, spettro dinamico dedisperso e a DM 0, piano DM--tempo). Le statistiche di canali e boxcar sono
+    stimate su $\pm\SI{1}{\second}$, perché su finestre più corte l'S/N dei boxcar larghi risulta sottostimato.
+  \item \file{tools/plot_dynspec.py}: spettri dinamici, serie temporali e spettri di uno o più file, uno sotto l'altro con
+    lo stesso asse dei tempi; DM, finestra, risoluzione, numero di canali, unità (conteggi o $\sigma$) e colormap a scelta.
+    È lo strumento della Fig.~\ref{fig:final}.
+\end{itemize}
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Campagna di completezza: metodo e pilota}
+\label{sec:completeness}
+
+\paragraph{Metodo.} FRB sintetici vengono iniettati nel file \emph{originale}, poi si eseguono gli step 1--4 e la ricerca
+di produzione dopo ogni step (\file{injection/run_realization.sh}). \file{injection/completeness_plan.py} prepara cinque
+scansioni, mescolate a caso nel tempo, con almeno \SI{2}{\second} tra un burst e l'altro:
+\begin{center}
+\small
+\begin{tabular}{llll}
+\toprule
+ & Varia & Fisso & Valori \\
+\midrule
+A & S/N & $w=\SI{1}{\milli\second}$, DM 250 & 5, 6, 7, 8, 9, 10, 12, 15, 20, 30 \\
+B & larghezza, a flusso fisso & S/N$_{\rm 1ms}=20$, DM 250 & 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32 ms \\
+C & larghezza, a S/N fisso & S/N 20, DM 250 & come B \\
+D & DM & $w=\SI{1}{\milli\second}$, S/N 20 & 30, 50, 75, 100, 150, 250, 400, 550, 700 \\
+E & DM $\times$ larghezza & S/N 20 & DM 30, 50, 100 $\times$ 2, 4, 8, 16 ms \\
+\bottomrule
+\end{tabular}
+\end{center}
+Nella scansione B il flusso è espresso come S/N$_{\rm 1ms}$, l'S/N che il burst avrebbe se fosse largo \SI{1}{\milli\second}
+allo stesso DM: l'ampiezza per canale resta fissa e l'S/N atteso segue la larghezza (50 a \SI{0.1}{\milli\second}, 20 a
+\SI{1}{\milli\second}, 10 a \SI{4}{\milli\second}, 5 a \SI{16}{\milli\second}). La scansione C, a S/N fisso, separa le
+perdite dovute alla pulizia da quelle dovute alla debolezza del burst. \file{injection/recover.py} associa candidati e
+burst (scarto in tempo entro $\SI{20}{\milli\second}+2w$, in DM entro $\max(0.2\,\mathrm{DM},10)$) e produce, per ogni
+step: la completezza con intervallo di Wilson al 68\%, il rapporto tra S/N di Heimdall e S/N atteso (anche sotto soglia, dal
+file \file{.cand} completo), la frazione classificata da FETCH e i \textbf{falsi candidati per file}, divisi in
+``vicini'' (rilevamenti spuri o doppi dei burst iniettati) e ``lontani''. Un file di solo rumore con lo stesso header e lo
+stesso bandpass (\file{tools/make_noise_fil.py}) dà la completezza ideale e la calibrazione dell'S/N su Heimdall.
+
+\paragraph{Pilota.} \SI{300}{\second} del file (\SIrange{500}{800}{\second}), scansioni A e D, 7 burst per punto
+(133 burst). Gli scarti tra candidati e burst sono piccoli (mediana sotto \SI{0.1}{\milli\second} in tempo, $\pm3$ in
+DM), quindi le tolleranze sono adeguate. Su rumore bianco Heimdall misura 1.08 volte l'S/N del modello dell'iniettore,
+stabile da S/N 12 a 30 e a tutti i DM. Lo step 4 del pilota è la prima versione (Sez.~\ref{sec:step4}).
+
+\begin{table}[ht]
+\centering
+\caption{Pilota, scansione A ($w=\SI{1}{\milli\second}$, DM 250): burst rivelati su 7 e, tra parentesi, mediana del
+rapporto tra S/N di Heimdall e S/N atteso.}
+\label{tab:pilotA}
+\small
+\begin{tabular}{lccccc}
+\toprule
+S/N iniettato & solo rumore & originale & step 1 & step 3 & step 4 \\
+\midrule
+8  & 7/7 (1.22) & 0/7 & 0/7 & 0/7 (0.94) & 3/7 (0.98) \\
+9  & 7/7 (1.18) & 0/7 & 0/7 & 0/7 (0.73) & 3/7 (0.89) \\
+10 & 7/7 (1.15) & 1/7 & 1/7 & 1/7 (0.77) & 6/7 (0.95) \\
+12 & 7/7 (1.06) & 0/7 & 2/7 & 2/7 (0.56) & 7/7 (0.91) \\
+15 & 7/7 (1.09) & 0/7 & 2/7 & 3/7 (0.69) & 7/7 (0.85) \\
+20 & 7/7 (1.10) & 3/7 & 6/7 & 5/7 (0.47) & 7/7 (0.86) \\
+30 & 7/7 (1.04) & 6/7 & 7/7 & 6/7 (0.62) & 7/7 (0.91) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Pilota: burst rivelati (su 133) e falsi candidati per file (\SI{300}{\second}). ``Vicini'': entro
+\SI{0.5}{\second} più lo sweep da un burst iniettato. Nessun falso lontano ha probabilità FETCH\,$\geq$\,0.5.}
+\label{tab:pilotfalse}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+ & selezionati & burst rivelati & falsi vicini & falsi lontani & S/N Heimdall / atteso (D) \\
+\midrule
+solo rumore & 162 & 117 & 24 & 21 & 1.04--1.11 \\
+originale & 253 & 28 & 119 & 106 & 0.32--0.43 \\
+step 1 & 264 & 67 & 91 & 106 & 0.42--0.60 \\
+step 2 & 236 & 69 & 76 & 91 & 0.43--0.63 \\
+step 3 & 162 & 73 & 38 & 51 & 0.43--0.62 \\
+step 4 (prima versione) & 263 & 103 & 78 & 82 & 0.76--0.92 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/pipeline/pilot_scan_A.png}\\
+\includegraphics[width=\textwidth]{fig/pipeline/pilot_scan_D.png}
+\caption{Pilota della campagna di completezza. In alto la scansione A (S/N variabile, $w=\SI{1}{\milli\second}$,
+DM 250), in basso la scansione D (DM variabile, S/N 20). A sinistra la completezza (S/N\,$>$\,8, DM\,$>$\,28) con
+intervalli di Wilson al 68\%, a destra il rapporto tra S/N di Heimdall e S/N atteso, per il file di solo rumore e dopo
+ogni step.}
+\label{fig:pilot}
+\end{figure}
+
+\paragraph{Lettura.}
+\begin{itemize}
+  \item Sul rumore bianco tutti i burst da S/N 8 in su sono rivelati. Sui dati reali, fino allo step 3, la soglia
+    effettiva cade attorno a S/N iniettato 20: un burst a S/N 10 viene visto a circa 5--6. Con lo step 4 scende a circa 10.
+  \item Il passo dall'originale allo step 1 vale un fattore 2.4 nei burst rivelati (da 28 a 67); lo step 4 un altro 40\%
+    (da 73 a 103). Gli step 2 e 3 cambiano poco la completezza ma dimezzano i falsi lontani (da 106 a 51).
+  \item Anche sul rumore bianco restano 21 falsi lontani in \SI{300}{\second}, tutti con boxcar di $2^{12}$--$2^{13}$
+    campioni (\SIrange{65}{131}{\milli\second}): è un limite di Heimdall con \texttt{-{}-boxcar\_max 8192}, indipendente
+    dalla pulizia.
+  \item Lo step 4 (prima versione) aumenta i falsi lontani da 51 a 82, quasi tutti con boxcar di $2^{10}$--$2^{13}$
+    campioni. 11 attraversano un confine di blocco da \SI{4}{\second}, contro circa 3 attesi per caso: una parte è dovuta
+    agli scalini corretti nella versione attuale. \ipotesi{La parte restante è attribuita alla correlazione residua tra
+    le due metà della banda, rossa, che Heimdall vede come eccessi a boxcar molto larghi; va verificato ripetendo il pilota
+    con la versione attuale.}
+\end{itemize}
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Risultato complessivo}
+\label{sec:final}
+
+La Fig.~\ref{fig:final} mostra, con \file{tools/plot_dynspec.py}, gli stessi \SI{10}{\second} dell'osservazione
+(\SIrange{500.1}{510.1}{\second}) nel file originale e dopo ciascuno dei quattro step, a DM 0, risoluzione
+\SI{0.5}{\milli\second} e 256 canali, in conteggi. Ogni pannello ha la propria scala di colori.
+\begin{itemize}
+  \item \textbf{Originale.} Il bandpass (spettro a destra) varia da circa 115 a 160 conteggi, con il minimo nei canali
+    121--127. Blocchi di qualche centinaio di millisecondi più chiari o più scuri sono i salti di guadagno; i due gruppi di
+    righe verticali a circa \SI{3.5}{\second} e \SI{5.9}{\second} sono passaggi del radar A (\SI{503.65}{\second}, entro
+    \SI{45}{\milli\second} dalla fase prevista) e del radar B (\SI{505.95}{\second}, nella metà bassa della banda). Sono
+    visibili anche brevi impulsi a banda stretta a \SIrange{1415}{1420}{\mega\hertz} e l'emissione persistente a
+    \SIrange{1438}{1440}{\mega\hertz}.
+  \item \textbf{Step 1.} Il bandpass è reso piatto (circa 128 conteggi), i salti di guadagno sono normalizzati e i canali
+    121--127 e 185 mascherati (grigio). Gli impulsi radar restano: la serie temporale li mostra ancora a 135--145 conteggi.
+  \item \textbf{Step 2.} Differenze minime a questa scala: la sottrazione della famiglia a \SI{50}{\hertz} agisce su
+    scale di \SI{20}{\milli\second} e inferiori.
+  \item \textbf{Step 3.} I due passaggi radar spariscono dalla serie temporale e dallo spettro dinamico; restano le
+    variazioni a banda larga del modo comune, ben visibili nella serie temporale (circa $\pm1$ conteggio, contro un rumore
+    bianco atteso di circa 0.09 conteggi per bin).
+  \item \textbf{Step 4.} La serie temporale è ridotta a circa $\pm0.1$ conteggi: a DM 0 la componente comune è sottratta
+    per costruzione, quindi questa serie non va confrontata con il rumore bianco, ma mostra che il modo comune è stato
+    rimosso a tutte le scale fino a qualche secondo. Lo spettro dinamico non ha più strisce verticali; restano piccoli residui a
+    \SI{1440}{\mega\hertz} (emissione a banda stretta) e attorno a \SI{3.9}{\second}, in corrispondenza della fine di un
+    salto di guadagno.
+\end{itemize}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth,height=0.88\textheight,keepaspectratio]{fig/pipeline/steps_500s.png}
+\caption{\SI{10}{\second} dell'osservazione (da \SI{500.1}{\second}) nel file originale e dopo gli step 1, 2, 3 e 4
+(dall'alto in basso), con \file{tools/plot_dynspec.py}: per ciascuno la serie temporale (media dei conteggi su tutti i
+canali attivi), lo spettro dinamico a DM 0 (risoluzione \SI{0.5}{\milli\second}, 256 canali) e lo spettro medio sulla
+finestra. Grigio: canali mascherati. Ogni pannello ha la propria scala di colori e il proprio asse delle serie temporali.}
+\label{fig:final}
+\end{figure}
+
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Discussione e prossimi passi}
+\label{sec:next}
+
+\paragraph{Cosa è stato ottenuto.} Sul file intero la pipeline (step 1--3) riduce i candidati da 2399 a 338, elimina gli
+episodi e l'RFI impulsivo a DM 0 forte (eventi a DM 0 con S/N\,$\geq$\,30 da 1105 a 8), riporta l'associazione con i radar
+al livello del caso per il radar A e a circa il doppio per il radar B, e azzera i falsi FETCH. Il pilota mostra che la
+pulizia aumenta anche la \emph{sensibilità}: i burst rivelati passano da 28 a 73 su 133 con gli step 1--3 e a 103 con lo
+step 4. I candidati che restano dopo lo step 3 sono una popolazione diversa: per il 42\% larghi $\geq\SI{4}{\milli\second}$,
+con DM mediano 167, e solo per il 37\% associati a un evento a DM 0 nel proprio sweep (per caso il 6\%). Sono emissioni a
+banda stretta più lunghe di \SI{32}{\milli\second} e variazioni lente, che lo step 3 non è progettato per trattare.
+
+\paragraph{Limiti.}
+\begin{itemize}
+  \item Una sola osservazione e un solo setup. L'ottimizzazione iterativa su un file potrebbe aver adattato la pipeline
+    a questi dati anche senza valori specifici; va verificata su almeno un altro dataset, idealmente della Croce del Nord
+    (banda stretta, frequenza bassa).
+  \item Il numero di sottobande (16) è fisso: su bande strette andrebbe legato alla larghezza di banda o al numero di canali.
+  \item Lo step 3 protegge 1221 eventi deboli (S/N mediano 7.5 a DM 0); il veto non è ancora tarato su dati reali.
+  \item Il pilota ha 7 burst per punto e un solo file; lo step 4 vi è nella prima versione.
+  \item Canali con RFI persistente a banda stretta (\SIrange{1438}{1440}{\mega\hertz}, \SI{1421}{\mega\hertz}) non sono
+    mascherati: i tratti sostituiti li rendono più gaussiani degli altri canali, ma lasciano una piccola variabilità.
+\end{itemize}
+
+\paragraph{Prossimi passi.}
+\begin{enumerate}
+  \item Ripetere il pilota con la versione attuale dello step 4 e verificare che i falsi candidati larghi tornino al
+    livello dello step 3.
+  \item Ricerca sul file intero dopo lo step 4 (confronto con i 338 candidati dello step 3).
+  \item Campagna di completezza completa: 4 realizzazioni del file intero, scansioni A--E, circa 2000 burst, con la
+    calibrazione dell'S/N ricavata dal file di solo rumore.
+  \item Se i falsi larghi restano: guadagni dello step 4 interpolati tra i blocchi e sottrazione di più componenti correlate
+    (2--3), misurandone il costo per gli FRB.
+  \item Valutare un trattamento delle emissioni a banda stretta più lunghe di \SI{32}{\milli\second}.
+  \item Prova su un'osservazione con un setup diverso, e sostituzione dei default legati alla geometria con valori derivati
+    dall'header.
+  \item Integrazione in \file{FRB_HF_Finder.py}, come per il ramo IQRM.
+\end{enumerate}

@@ -26,34 +26,35 @@
 \makeatletter\newcommand{\tabinput}[1]{\@@input #1 }\makeatother
 \newcommand{\ipotesi}[1]{\textcolor{orange!70!black}{\textbf{[Ipotesi]}} #1}
 
-\title{\textbf{Rimozione degli RFI impulsivi per la ricerca di FRB in banda L}\\[4pt]
-\large Stato dei lavori: strumenti sviluppati e analisi dell'osservazione\\ \file{ag278m_mc_no0004_processed.fil}}
+\title{\textbf{Una pipeline di rimozione degli RFI per la ricerca di FRB in banda L}\\[4pt]
+\large Analisi dell'osservazione \file{ag278m_mc_no0004_processed.fil}, i quattro step di pulizia\\
+e il pilota della campagna di completezza}
 \author{Progetto \file{frb-rfi-clean}}
-\date{18 novembre 2026}
+\date{23 novembre 2026 \\ \small (prima versione: 18 novembre 2026)}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
 \noindent
-Questo documento riassume il lavoro svolto finora nel progetto \file{frb-rfi-clean}, il cui obiettivo è
-una pipeline automatica di rimozione delle interferenze radio (RFI) da file SIGPROC filterbank,
-da applicare prima della ricerca di \emph{fast radio burst} (FRB) con Heimdall e FETCH.
-Si descrivono (i) gli strumenti software sviluppati e validati: lettura e taglio di filterbank di grandi
-dimensioni, pianificazione e iniezione di FRB sintetici in un solo passaggio sui dati, censimento
-diagnostico degli RFI; (ii) l'analisi della catena di iniezione preesistente (\file{FRB_injector.py},
-FRBfaker); (iii) i risultati ottenuti sull'osservazione di \SI{1199}{\second} acquisita a Medicina in banda L
-(\SIrange{1382.25}{1446.25}{\mega\hertz}, 256 canali, \SI{16}{\micro\second}).
-In questa osservazione Heimdall (DM \numrange{25}{700}\,\dmu, S/N\,$>$\,8 dopo la selezione DM\,$>$\,28)
-produce 2399 candidati, nessuno dei quali supera la soglia di FETCH (probabilità massima 0.54).
-Il 63\% dei candidati è concentrato in 7 episodi di durata inferiore al secondo; i due episodi più numerosi
-(1081 candidati) coincidono in modo statisticamente significativo con un salto di guadagno a banda larga e
-con un aumento improvviso del rumore nella sottobanda \SIrange{1414}{1418}{\mega\hertz}. Su tutta
-l'osservazione, gli intervalli da \SI{0.25}{\second} in cui uno dei due fenomeni è presente coprono il 39\%
-del tempo e contengono l'87\% dei candidati (77\% escludendo i due episodi principali).
-Si identificano inoltre due sorgenti impulsive con periodo di circa \SI{10}{\second}, compatibili con radar di
-sorveglianza aerea, e periodicità artificiali a \SI{50}{\hertz}, \SI{0.625}{\second} e \SI{0.400}{\second}.
-Ogni numero riportato è prodotto da script inclusi nel repository (Appendice~\ref{app:repro}).
+Questo documento descrive il progetto \file{frb-rfi-clean}: una pipeline automatica di rimozione delle interferenze
+radio (RFI) da file SIGPROC filterbank, da applicare prima della ricerca di \emph{fast radio burst} (FRB) con Heimdall
+e FETCH. La prima parte (Sez.~\ref{sec:intro}--\ref{sec:discussion}) riporta gli strumenti di base (lettura e taglio
+dei filterbank, iniezione di FRB sintetici, censimento degli RFI) e l'analisi iniziale di un'osservazione di
+\SI{1199}{\second} acquisita a Medicina in banda L (\SIrange{1382.25}{1446.25}{\mega\hertz}, 256 canali,
+\SI{16}{\micro\second}), in cui Heimdall produce 2399 candidati, nessuno classificato come FRB da FETCH, concentrati in
+episodi legati a salti di guadagno e lampi di rumore, con due radar di periodo \SI{10}{\second} e RFI a \SI{50}{\hertz}.
+La seconda parte (Sez.~\ref{sec:cleanpipe}--\ref{sec:next}) descrive la pipeline in quattro step:
+(1) maschera dei canali, normalizzazione per canale che segue i salti di guadagno e sostituzione delle celle anomale;
+(2) individuazione e sottrazione automatica delle famiglie di righe periodiche;
+(3) rimozione degli impulsi a DM 0 con veto di dispersione;
+(4) sottrazione del rumore di modo comune tra i canali.
+Con gli step 1--3 i candidati scendono da 2399 a 338, gli eventi a DM 0 con S/N\,$\geq$\,30 da 1105 a 8 e i falsi
+positivi di FETCH a zero. Il pilota di una campagna di completezza (133 FRB iniettati in \SI{300}{\second}) mostra che
+la pulizia aumenta anche la sensibilità: i burst rivelati passano da 28 (dati originali) a 73 (step 1--3) e a 103 con lo
+step 4, che porta il rapporto tra S/N misurato e atteso da circa 0.5 a 0.85--0.92 (1.08 su rumore bianco).
+Ogni step è generale (parametri dall'header e soglie relative) e validato su dati sintetici; i limiti e i passi
+successivi sono discussi nella Sez.~\ref{sec:next}.
 \end{abstract}
 
 \tableofcontents
@@ -375,7 +376,7 @@ inserirà la pulizia sviluppata in questo progetto.
 
 % =====================================================================================
 \FloatBarrier
-\section{Risultati sull'osservazione \file{ag278m_mc_no0004}}
+\section{Analisi iniziale dell'osservazione \file{ag278m_mc_no0004} (dati originali)}
 \label{sec:results}
 
 Le figure~\ref{fig:channels}--\ref{fig:events} sono prodotte da \file{rfi_survey.py} sul file completo; le
@@ -779,7 +780,7 @@ rimanenti (densità 1.96); gli intervalli senza A né B contengono il 22.9\% (de
 
 % =====================================================================================
 \FloatBarrier
-\section{Discussione}
+\section{Discussione dell'analisi iniziale}
 \label{sec:discussion}
 
 \paragraph{Cosa genera i candidati in questa osservazione.} I dati indicano che la maggior parte dei candidati di
@@ -821,31 +822,12 @@ radiometrico. Una normalizzazione efficace delle variazioni lente potrebbe quind
   \item Nessun burst sintetico è ancora stato iniettato in questi dati, quindi la sensibilità della pipeline attuale
     non è stata misurata.
 \end{itemize}
+Le sezioni seguenti descrivono come queste indicazioni sono state tradotte nella pipeline di pulizia. Gli ultimi due
+limiti sono stati affrontati: la calibrazione dell'S/N su Heimdall e la sensibilità sono misurate nel pilota della
+campagna di completezza (Sez.~\ref{sec:completeness}). L'ipotesi sul meccanismo degli episodi è coerente con il fatto
+che la normalizzazione dello step 1, che segue i salti di guadagno, li elimina tutti (Sez.~\ref{sec:step1}).
 
-% =====================================================================================
-\FloatBarrier
-\section{Prossimi passi}
-\label{sec:next}
-
-\begin{enumerate}
-  \item \textbf{Primo stadio di pulizia} (\file{tools/rfi_clean.py}): maschera dei canali, normalizzazione mobile per
-    canale, sostituzione dei tratti anomali. L'output è un filterbank con lo stesso header, da passare a
-    \file{FRB_HF_Finder.py} come nel ramo IQRM. Confronto del numero e della distribuzione dei candidati con i 2399
-    attuali.
-  \item \textbf{Calibrazione dell'S/N} dell'iniettore su Heimdall con dati finti dello stesso setup.
-  \item \textbf{Campagna di iniezione} sul file originale e sul file pulito: completezza in funzione di S/N, DM e
-    larghezza, e perdita di S/N dovuta alla pulizia.
-  \item \textbf{Strumento \file{cand_vs_survey.py}} che renda automatica l'analisi delle Sez.~\ref{sec:episodes}
-    e~\ref{sec:correlation}.
-  \item \textbf{Migliorare la ricerca di periodicità} nel censimento: folding degli eventi forti separati per tipo
-    (banda intera e gruppi di sottobande), in modo da trovare i radar in automatico.
-  \item \textbf{Analisi dei tagli a piena risoluzione} attorno agli episodi a 78, 197 e \SI{1065}{\second}, e dei
-    candidati a DM 260.9 attorno a \SI{829}{\second}.
-  \item \textbf{Verifica delle ipotesi strumentali} (segmenti della banda, controllo automatico del guadagno) con chi
-    conosce il backend di Medicina.
-  \item \textbf{Estensione ad altre osservazioni} per distinguere le caratteristiche stabili del sito da quelle
-    specifiche di questo file.
-\end{enumerate}
+\input{pipeline}
 
 % =====================================================================================
 \appendix
@@ -869,7 +851,27 @@ python3 tools/rfi_survey.py ag278m_mc_no0004_processed.fil --out survey_no0004_f
 python3 docs/report_no0004/analysis.py --npz <percorso>/survey.npz
 \end{Verbatim}
     Lo script scrive \file{fig/}, \file{tab_*.tex} e \file{numbers.json}.
-  \item Validazione dell'iniettore e del censimento: \texttt{python3 -m pytest tests}.
+  \item Pipeline di pulizia, nell'ordine (ogni step scrive accanto all'output un riassunto \file{.json}):
+\begin{Verbatim}[fontsize=\small,breaklines=true]
+python3 tools/rfi_clean.py      originale.fil step1.fil
+python3 tools/rfi_periodic.py   step1.fil     step2.fil
+python3 tools/rfi_impulses.py   step2.fil     step3.fil
+python3 tools/rfi_commonmode.py step3.fil     step4.fil
+\end{Verbatim}
+    I risultati delle ricerche e dei censimenti dopo ogni step sono in \url{https://github.com/davidepelliciari/frb-rfi-data},
+    cartelle \file{search/} e \file{surveys/} (\file{..._clean_step1}, \file{..._step2_updated},
+    \file{..._step3_v4}, \file{..._step4}).
+  \item Campagna di completezza (piano, una realizzazione, associazione e resoconto):
+\begin{Verbatim}[fontsize=\small,breaklines=true]
+python3 injection/completeness_plan.py --fil originale.fil --outdir camp --seed 1
+bash injection/run_realization.sh originale.fil camp/real_01.params lavoro_r01 1
+python3 injection/recover.py match --plan camp/plan.csv --realization 1 --step orig lavoro_r01/orig ... --out camp/matched_r01.csv
+python3 injection/recover.py report --matched 'camp/matched_r*.csv' --out camp/report
+\end{Verbatim}
+    I prodotti del pilota sono in \file{completeness/pilot/} del repository dei dati.
+  \item Figure della pipeline: \file{fig/pipeline/} (la Fig.~\ref{fig:final} è prodotta con
+    \file{tools/plot_dynspec.py}).
+  \item Validazione di tutti gli strumenti: \texttt{python3 -m pytest tests} (47 test).
 \end{itemize}
 
 \begin{table}[ht]
