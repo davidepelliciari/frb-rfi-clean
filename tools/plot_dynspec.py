@@ -6,13 +6,15 @@ uno sotto l'altro con lo stesso asse dei tempi, per confrontarli (es. originale 
 Per ogni file: in alto la serie temporale (somma sui canali, dedispersa al DM dato), sotto lo spettro
 dinamico. Tutti i pannelli condividono l'asse x (tempo dall'istante di inizio, in ms).
 
-Normalizzazione: ogni canale di ogni file e' riportato in unita' della propria sigma (mediana e MAD su una
-finestra di riferimento di --ref secondi centrata sulla finestra mostrata, che conviene sia ampia); i canali
-costanti (mascherati) sono in grigio (in rosso tenue con la colormap in scala di grigi). La scala di colori e' COMUNE a tutti i file (salvo --own-scale), cosi'
-i colori sono confrontabili; lo stesso per l'asse y delle serie temporali (salvo --own-scale).
-Serie temporale: somma dei canali attivi / sqrt(numero di canali) per campione, mediata sul bin di tempo e
-espressa in S/N per bin (rumore bianco atteso = 1). A destra di ogni spettro dinamico, lo spettro: media su
-tutta la finestra di ogni gruppo di canali, in S/N (rumore bianco atteso = 1), e la scala di colori.
+Unita' (--units):
+  counts (default): i valori del file (conteggi), mediati sui canali del gruppo e sul bin di tempo, come in un
+    waterfall usuale. Serie temporale: media sui canali attivi. Spettro: media su tutta la finestra (il bandpass).
+  sigma: ogni canale in unita' della propria sigma (mediana e MAD su una finestra di riferimento di --ref
+    secondi centrata sulla finestra mostrata). Serie temporale: somma dei canali attivi / sqrt(N) per campione,
+    in S/N per bin; spettro: media su tutta la finestra, in S/N (rumore bianco atteso = 1).
+I canali costanti (mascherati) sono in grigio (in rosso tenue con la colormap in scala di grigi). La scala di
+colori e' COMUNE a tutti i file (salvo --own-scale), cosi' i colori sono confrontabili; lo stesso per gli assi
+delle serie temporali e degli spettri.
 
 Risoluzione: --tres in ms; se e' piu' fine del campionamento si usa il campionamento (risoluzione massima).
 --nchan: numero di canali mostrati (gruppi di canali adiacenti mediati); non piu' dei canali del file.
@@ -34,7 +36,7 @@ KDM = 4.148808e3
 MAD2SIG = 1.4826
 
 
-def prepare(path, start, window, dm, tres, nchan, ref):
+def prepare(path, start, window, dm, tres, nchan, ref, units="counts"):
     """Restituisce (tempo [ms], frequenze dei gruppi [MHz], spettro (nt, ngruppi) in sigma, serie in S/N per bin,
     tres effettiva [ms], gruppi mascherati)."""
     fb = Filterbank(path)
@@ -63,14 +65,20 @@ def prepare(path, start, window, dm, tres, nchan, ref):
     x = fb.read(s0, n_show + shift.max() + 1).astype(np.float32)
     if x.shape[0] < n_show + shift.max() + 1:
         raise SystemExit(f"{path}: la finestra (piu' lo sweep a DM {dm}) esce dal file")
-    z = (x - med) / np.where(dead, 1, sig)
+    if units == "counts":
+        z = x
+    else:
+        z = (x - med) / np.where(dead, 1, sig)
     z[:, dead] = 0.0
     dd = z[np.arange(n_show)[:, None] + shift[None, :], np.arange(fb.nchans)[None, :]]
     del z, x
     # serie temporale: somma sui canali attivi / sqrt(N), media su r campioni, in S/N per bin
     live = ~dead
-    ts_ = dd[:, live].sum(1) / np.sqrt(max(1, live.sum()))
-    ts_bin = ts_.reshape(-1, r).mean(1) * np.sqrt(r)
+    if units == "counts":
+        ts_bin = dd[:, live].mean(1).reshape(-1, r).mean(1)
+    else:
+        ts_ = dd[:, live].sum(1) / np.sqrt(max(1, live.sum()))
+        ts_bin = ts_.reshape(-1, r).mean(1) * np.sqrt(r)
     # spettro: gruppi di canali adiacenti (in ordine di frequenza decrescente), media; tempo mediato su r
     order = np.argsort(-f)
     groups = np.array_split(order, min(nchan, fb.nchans))
@@ -88,7 +96,7 @@ def prepare(path, start, window, dm, tres, nchan, ref):
     # spettro: media su tutta la finestra di ogni gruppo, in S/N (rumore bianco atteso = 1)
     nlg = np.array([live[g].sum() for g in groups])
     band = np.full(len(groups), np.nan)
-    band[~gdead] = spec[:, ~gdead].mean(0) * np.sqrt(nlg[~gdead] * n_show)
+    band[~gdead] = spec[:, ~gdead].mean(0) * (1.0 if units == "counts" else np.sqrt(nlg[~gdead] * n_show))
     t_ms = (np.arange(n_show // r) + 0.5) * r * ts * 1e3
     return t_ms, fg, spec, ts_bin, r * ts * 1e3, gdead, fb, band
 
@@ -104,9 +112,13 @@ def main(argv=None):
     p.add_argument("--nchan", type=int, default=64, help="numero di canali mostrati (default 64)")
     p.add_argument("--ref", type=float, default=2.0,
                    help="finestra di riferimento per mediana e sigma dei canali [s] (default 2)")
+    p.add_argument("--units", choices=["counts", "sigma"], default="counts",
+                   help="counts: valori del file (default); sigma: ogni canale in unita' della propria sigma")
     p.add_argument("--labels", nargs="+", default=None)
+    p.add_argument("--vmin", type=float, default=None, help="minimo della scala di colori (solo --units counts)")
     p.add_argument("--vmax", type=float, default=None,
-                   help="scala di colori simmetrica +-vmax [sigma] (default: percentile 99.5 di |valori|, comune)")
+                   help="massimo della scala di colori (counts: default percentile 99.5, comune; sigma: scala "
+                        "simmetrica +-vmax, default percentile 99.5 di |valori|)")
     p.add_argument("--own-scale", action="store_true", help="scala di colori e asse y separati per ogni file")
     p.add_argument("--cmap", choices=["gray", "viridis", "RdBu_r"], default="gray",
                    help="colormap: gray (scala di grigi, default), viridis, RdBu_r (blu-bianco-rosso)")
@@ -119,7 +131,8 @@ def main(argv=None):
     import matplotlib.pyplot as plt
 
     labels = a.labels or [Path(x).name for x in a.fil]
-    data = [prepare(x, a.start, a.window, a.dm, a.tres, a.nchan, a.ref) for x in a.fil]
+    data = [prepare(x, a.start, a.window, a.dm, a.tres, a.nchan, a.ref, a.units) for x in a.fil]
+    counts = a.units == "counts"
     tres_eff = data[0][4]
     nf = len(data)
     hr = []
@@ -139,8 +152,16 @@ def main(argv=None):
         ax_cb.append(a_cb)
     for x in ax[:-1]:
         x.tick_params(labelbottom=False)
-    allv = np.concatenate([np.abs(d[2][np.isfinite(d[2])]) for d in data])
-    vcommon = a.vmax or float(np.percentile(allv, 99.5))
+    allv = np.concatenate([d[2][np.isfinite(d[2])] for d in data])
+
+    def climits(vals):
+        if counts:
+            lo_, hi_ = np.percentile(vals, [0.5, 99.5])
+            return (a.vmin if a.vmin is not None else float(lo_)), (a.vmax if a.vmax is not None else float(hi_))
+        v_ = a.vmax or float(np.percentile(np.abs(vals), 99.5))
+        return -v_, v_
+
+    ccommon = climits(allv)
     ycommon = (min(d[3].min() for d in data), max(d[3].max() for d in data))
     bcommon = (min(np.nanmin(d[7]) for d in data), max(np.nanmax(d[7]) for d in data))
     cmap = matplotlib.colormaps[a.cmap].copy() if hasattr(matplotlib, "colormaps") else plt.get_cmap(a.cmap)
@@ -149,31 +170,34 @@ def main(argv=None):
     for k, (t, fg, spec, tsb, tr, gdead, fb, band) in enumerate(data):
         a_ts, a_sp = ax[2 * k], ax[2 * k + 1]
         a_ts.step(t, tsb, where="mid", lw=0.8, color="k")
-        a_ts.axhline(0, color="0.6", lw=0.5)
+        if not counts:
+            a_ts.axhline(0, color="0.6", lw=0.5)
         if not a.own_scale:
             pad = 0.05 * (ycommon[1] - ycommon[0])
             a_ts.set_ylim(ycommon[0] - pad, ycommon[1] + pad)
-        a_ts.set_ylabel("S/N per bin", fontsize=8)
+        a_ts.set_ylabel("conteggi" if counts else "S/N per bin", fontsize=8)
         a_ts.set_title(f"{labels[k]}   (DM {a.dm:g}, risoluzione {tr:.3g} ms, {len(fg)} canali, "
                        f"campionamento {fb.tsamp * 1e3:.3g} ms)", fontsize=9, loc="left")
-        v = vcommon if not a.own_scale else float(np.percentile(np.abs(spec[np.isfinite(spec)]), 99.5))
+        c_lo, c_hi = ccommon if not a.own_scale else climits(spec[np.isfinite(spec)])
         df = abs(fg[0] - fg[1]) if len(fg) > 1 else abs(fb.foff)
-        im = a_sp.imshow(spec.T, aspect="auto", origin="upper", cmap=cmap, vmin=-v, vmax=v,
+        im = a_sp.imshow(spec.T, aspect="auto", origin="upper", cmap=cmap, vmin=c_lo, vmax=c_hi,
                          extent=[0, t[-1] + tr / 2, fg.min() - df / 2, fg.max() + df / 2], interpolation="nearest")
         a_sp.set_ylabel("frequenza [MHz]", fontsize=8)
         # spettro (media su tutta la finestra) a destra, con lo stesso asse delle frequenze
         a_bd = ax_band[k]
         ok = np.isfinite(band)
         a_bd.step(band[ok], fg[ok], where="mid", lw=0.8, color="k")
-        a_bd.axvline(0, color="0.6", lw=0.5)
+        if not counts:
+            a_bd.axvline(0, color="0.6", lw=0.5)
         if not a.own_scale:
             pad = 0.05 * (bcommon[1] - bcommon[0])
             a_bd.set_xlim(bcommon[0] - pad, bcommon[1] + pad)
         a_bd.tick_params(labelleft=False, labelsize=7)
-        a_bd.set_xlabel("S/N", fontsize=7)
+        a_bd.set_xlabel("conteggi" if counts else "S/N", fontsize=7)
         a_bd.set_title("spettro", fontsize=8)
         cb = fig.colorbar(im, cax=ax_cb[k])
-        cb.set_label("media del gruppo di canali [σ del canale]", fontsize=7)
+        cb.set_label("conteggi (media del gruppo di canali)" if counts else "media del gruppo di canali [σ del canale]",
+                     fontsize=7)
         cb.ax.tick_params(labelsize=7)
     ax[-1].set_xlabel(f"tempo dall'inizio [ms]   (inizio = {a.start:.6f} s, al canale piu' alto)")
     ax[-1].set_xlim(0, data[0][0][-1] + tres_eff / 2)
