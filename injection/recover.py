@@ -8,7 +8,8 @@ Due comandi:
   match   una realizzazione: per ogni step (cartella di output della ricerca, con
           *_all_candidates.csv, results_a.csv, *_all.cand) associa candidati e burst.
           Scrive MATCHED.csv (un burst per step per riga) e MATCHED_false.csv (falsi candidati
-          per step: quelli selezionati dalla pipeline non associati ad alcun burst).
+          per step: quelli selezionati dalla pipeline non associati ad alcun burst, divisi in "vicini" a un
+          burst iniettato, cioe' rilevamenti spuri di un burst forte, e "lontani").
 
   report  una o piu' realizzazioni: completezza per punto di ogni scansione (intervallo di Wilson
           al 68%), S/N recuperato / atteso, frazione classificata da FETCH, falsi candidati
@@ -179,13 +180,19 @@ def cmd_match(a):
                 snr_raw=f"{raw[k, 2]:.3f}" if k >= 0 else "",
                 removed_frac=(f"{removed_fraction(toa[i], dm[i], wid[i], imp[lab], a.f_lo, a.f_hi):.3f}"
                               if lab in imp else "")))
-        # falsi candidati: selezionati e non associati ad alcun burst
+        # falsi candidati: selezionati e non associati ad alcun burst. "Vicini": entro 0.5 s (piu' lo sweep)
+        # da un burst iniettato, cioe' quasi sempre rilevamenti spuri di un burst forte a DM o larghezza
+        # sbagliati; "lontani": il resto (RFI o rumore)
         fp = ~used
+        sweep = KDM * dm * (a.f_lo ** -2 - a.f_hi ** -2)
+        near = np.array([np.any((c[0] > toa - 0.5) & (c[0] < toa + sweep + 0.5)) for c in sel], bool) \
+            if len(sel) else np.zeros(0, bool)
         n_best = 0
         if best_p is not None:
             n_best = sum(1 for ln in open(best_p) if ln.strip().endswith((",1", ",1.0")))
         false_rows.append(dict(realization=a.realization, step=lab, n_selected=len(sel),
                                n_matched=int(used.sum()), n_false=int(fp.sum()),
+                               n_false_near=int(np.sum(fp & near)), n_false_far=int(np.sum(fp & ~near)),
                                n_false_fetch05=int(np.sum(fp & (pr >= 0.5))),
                                n_false_fetch07=int(np.sum(fp & (pr >= 0.7))),
                                n_fetch07=int(np.sum(pr >= 0.7)), n_best_file=n_best,
@@ -288,11 +295,12 @@ def cmd_report(a):
             w.writeheader()
             w.writerows(fl)
         print("Falsi candidati per file (selezionati dalla pipeline e non associati a un burst):")
-        print(f"  {'realizz.':>8s} {'step':>8s} {'selez.':>7s} {'associati':>9s} {'falsi':>6s} "
-              f"{'falsi F>=0.5':>12s} {'falsi F>=0.7':>12s}")
+        print(f"  {'realizz.':>8s} {'step':>8s} {'selez.':>7s} {'associati':>9s} {'falsi':>6s} {'vicini':>7s} "
+              f"{'lontani':>8s} {'falsi F>=0.5':>12s} {'falsi F>=0.7':>12s}")
         for r in fl:
             print(f"  {r['realization']:>8s} {r['step']:>8s} {r['n_selected']:>7s} {r['n_matched']:>9s} "
-                  f"{r['n_false']:>6s} {r['n_false_fetch05']:>12s} {r['n_false_fetch07']:>12s}")
+                  f"{r['n_false']:>6s} {r.get('n_false_near', ''):>7s} {r.get('n_false_far', ''):>8s} "
+                  f"{r['n_false_fetch05']:>12s} {r['n_false_fetch07']:>12s}")
         for st in steps:
             v = [int(r["n_false"]) for r in fl if r["step"] == st]
             if v:
