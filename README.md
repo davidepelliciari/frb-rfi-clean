@@ -10,6 +10,9 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `tools/fil_cut.py` | info e tagli di filterbank grandi senza caricarli in memoria (solo libreria standard) |
 | `tools/make_noise_fil.py` | filterbank di solo rumore noto, con l'header di un file reale (per calibrare l'S/N su Heimdall) |
 | `injection/plan_injections.py` | pianifica una campagna di iniezione (`.params`, `injections.csv`, `campaign.json`) ed eventualmente la esegue |
+| `injection/completeness_plan.py` | campagna di completezza: scansioni in S/N, larghezza (a flusso o S/N fisso), DM e DM x larghezza, mescolate in piu' realizzazioni |
+| `injection/run_realization.sh` | una realizzazione sul cluster: iniezione nel file originale, step 1-3, ricerca dopo ogni step |
+| `injection/recover.py` | associa candidati e burst iniettati: completezza, S/N recuperato, falsi candidati per file |
 | `injection/inject_frb.py` | iniettore di FRB in un solo passaggio, a blocchi; scrive il catalogo di verità `*.truth.csv` |
 | `tools/rfi_survey.py` | censimento degli RFI (qualsiasi banda, tsamp, nbits 1-32): statistiche per canale, eventi impulsivi a DM 0 in banda intera e sottobande, periodicità (radar, DME), canali sospetti, grafici |
 | `tools/rfi_clean.py` | **primo stadio di pulizia**: maschera dei canali, normalizzazione per canale che segue i salti di guadagno, sostituzione delle celle tempo-frequenza con varianza anomala, veto di dispersione per non toccare i segnali dispersi |
@@ -173,3 +176,27 @@ protetto se la sua larghezza e' al massimo ~0.7 volte lo sweep del suo DM (con 6
 rimosso. Su treni di impulsi sintetici simili al radar A reale (3 gruppi di 6 impulsi) restano 0 impulsi
 su 54 (prima della correzione per-impulso: 46 su 54).
 Gli FRB deboli, non rivelati a DM 0, non vengono toccati.
+
+## Campagna di completezza
+
+```bash
+# 1. piano: 49 punti x 40 burst, distribuiti in 4 realizzazioni del file intero (min 2 s tra burst)
+python3 injection/completeness_plan.py --fil ORIGINALE.fil --outdir camp --seed 1
+# 2. per ogni realizzazione (sul cluster): iniezione, step 1-3, ricerca dopo ogni step
+bash injection/run_realization.sh ORIGINALE.fil camp/real_01.params /data/.../camp_r01 1
+# 3. associazione e resoconto
+python3 injection/recover.py match --plan camp/plan.csv --realization 1 --step orig R/orig \
+    --step step1 R/step1 --step step2 R/step2 --step step3 R/step3 --out camp/matched_r01.csv
+python3 injection/recover.py report --matched 'camp/matched_r*.csv' --out camp/report
+```
+
+Scansioni: **A** S/N (w = 1 ms, DM 250); **B** larghezza a flusso fisso (S/N che il burst avrebbe a
+1 ms = 20, DM 250: l'S/N scende con la larghezza come per un burst reale); **C** larghezza a S/N fisso
+(20, DM 250: ogni perdita e' un danno della pipeline); **D** DM (w = 1 ms, S/N 20); **E** DM 30, 50, 100
+x larghezza 2-16 ms (S/N 20), la zona a rischio dello step 3. Per ogni step: completezza (S/N > 8,
+DM > 28, come in produzione) con intervallo di Wilson, S/N di Heimdall / S/N atteso (anche sotto
+soglia, da `*_all.cand`), frazione classificata da FETCH, e per ogni file cercato i **falsi
+candidati** (selezionati e non associati ad alcun burst), in totale e con FETCH >= 0.5 e >= 0.7.
+Con un file di solo rumore (`tools/make_noise_fil.py`, `STEPS=orig`) si ottengono la completezza
+ideale e la calibrazione dell'S/N su Heimdall.
+
