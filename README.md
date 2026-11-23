@@ -11,13 +11,14 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `tools/make_noise_fil.py` | filterbank di solo rumore noto, con l'header di un file reale (per calibrare l'S/N su Heimdall) |
 | `injection/plan_injections.py` | pianifica una campagna di iniezione (`.params`, `injections.csv`, `campaign.json`) ed eventualmente la esegue |
 | `injection/completeness_plan.py` | campagna di completezza: scansioni in S/N, larghezza (a flusso o S/N fisso), DM e DM x larghezza, mescolate in piu' realizzazioni |
-| `injection/run_realization.sh` | una realizzazione sul cluster: iniezione nel file originale, step 1-3, ricerca dopo ogni step |
+| `injection/run_realization.sh` | una realizzazione sul cluster: iniezione nel file originale, step 1-4, ricerca dopo ogni step |
 | `injection/recover.py` | associa candidati e burst iniettati: completezza, S/N recuperato, falsi candidati per file |
 | `injection/inject_frb.py` | iniettore di FRB in un solo passaggio, a blocchi; scrive il catalogo di verità `*.truth.csv` |
 | `tools/rfi_survey.py` | censimento degli RFI (qualsiasi banda, tsamp, nbits 1-32): statistiche per canale, eventi impulsivi a DM 0 in banda intera e sottobande, periodicità (radar, DME), canali sospetti, grafici |
 | `tools/rfi_clean.py` | **primo stadio di pulizia**: maschera dei canali, normalizzazione per canale che segue i salti di guadagno, sostituzione delle celle tempo-frequenza con varianza anomala, veto di dispersione per non toccare i segnali dispersi |
 | `tools/rfi_periodic.py` | **step 2**: sottrazione canale per canale delle componenti periodiche (default 50 Hz e armoniche) |
 | `tools/rfi_impulses.py` | **step 3**: rimozione degli impulsi a DM 0 (radar, impulsi a banda intera o parziale) con veto di dispersione |
+| `tools/rfi_commonmode.py` | **step 4**: sottrazione del rumore di modo comune (segnale comune a tutti i canali), ultimo passo prima della ricerca |
 | `tools/plot_cand.py` | ispezione di un candidato dal filterbank (profilo, spettri dinamici dedisperso e a DM 0, piano DM-tempo), anche su piu' file affiancati |
 | `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), step 1 (`clean.py`), step 2 (`periodic.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
 | `docs/report_no0004/` | report LaTeX sull'osservazione ag278m_mc_no0004 e script di analisi riproducibile |
@@ -177,12 +178,42 @@ rimosso. Su treni di impulsi sintetici simili al radar A reale (3 gruppi di 6 im
 su 54 (prima della correzione per-impulso: 46 su 54).
 Gli FRB deboli, non rivelati a DM 0, non vengono toccati.
 
+## Step 4: rumore di modo comune
+
+```bash
+python3 tools/rfi_commonmode.py step3.fil step4.fil                 # accoppiamento stimato per canale
+python3 tools/rfi_commonmode.py step3.fil step4.fil --mode zerodm   # filtro a DM zero (g = 1)
+```
+
+Il pilota della campagna di iniezione ha mostrato che, anche dopo gli step 1-3, Heimdall misura sui
+dati reali circa meta' dell'S/N atteso (0.43-0.62, contro 1.08 su rumore bianco), perche' il rumore e'
+fortemente correlato tra i canali: la serie a DM 0 a banda intera ha un rumore 4.4 volte quello atteso
+per canali indipendenti a 1 ms e 17 volte a 65 ms. Lo step 4, per ogni blocco di 4 s, normalizza i
+canali, calcola il modo comune m(t) (media su tutti i canali attivi), stima per regressione
+l'accoppiamento g_c di ogni canale (a 1 ms, con m calcolato senza il canale stesso) e sottrae g_c m(t).
+Mediana e sigma dei canali restano quelle dell'input, i canali mascherati restano identici.
+
+Va applicato **dopo** lo step 3: richiede canali normalizzati e mascherati (step 1) e azzera la serie a
+DM 0 su cui lavorano gli step 2 e 3 (che inoltre tolgono gli impulsi a banda parziale, che una
+sottrazione della media trasformerebbe in impronte negative negli altri canali). Un FRB perde circa la
+frazione larghezza / sweep del proprio segnale: trascurabile per burst stretti, grande per burst larghi
+a basso DM (simili al modo comune stesso).
+
+Prodotti: `step4.fil.commonmode.json` (eccesso di rumore a DM 0 prima e dopo; lo stesso per la
+differenza tra meta' alta e meta' bassa della banda, che misura la correlazione residua; guadagni) e
+`step4.fil.commonmode.npz`.
+
+Validazione (`tests/test_commonmode.py`, dati sintetici con modo comune rosso ed eccesso 6 a DM 0):
+burst di 1 ms a DM 30-700 da S/N 2-6 a 10.4-12.4 (senza modo comune 11-12.7); 4 ms recuperati da DM 100;
+16 ms ancora ridotti a DM <= 100 (4.5-9 contro 28-30), ma molto meglio che senza step 4 (0.3-1.6); su
+rumore bianco l'S/N resta invariato. Tempo: circa 1 s per secondo di dati a 256 canali e 16 us.
+
 ## Campagna di completezza
 
 ```bash
 # 1. piano: 49 punti x 40 burst, distribuiti in 4 realizzazioni del file intero (min 2 s tra burst)
 python3 injection/completeness_plan.py --fil ORIGINALE.fil --outdir camp --seed 1
-# 2. per ogni realizzazione (sul cluster): iniezione, step 1-3, ricerca dopo ogni step
+# 2. per ogni realizzazione (sul cluster): iniezione, step 1-4, ricerca dopo ogni step
 bash injection/run_realization.sh ORIGINALE.fil camp/real_01.params /data/.../camp_r01 1
 # 3. associazione e resoconto
 python3 injection/recover.py match --plan camp/plan.csv --realization 1 --step orig R/orig \
