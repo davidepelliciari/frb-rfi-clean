@@ -8,7 +8,7 @@ dinamico. Tutti i pannelli condividono l'asse x (tempo dall'istante di inizio, i
 
 Normalizzazione: ogni canale di ogni file e' riportato in unita' della propria sigma (mediana e MAD su una
 finestra di riferimento di --ref secondi centrata sulla finestra mostrata, che conviene sia ampia); i canali
-costanti (mascherati) sono in grigio. La scala di colori e' COMUNE a tutti i file (salvo --own-scale), cosi'
+costanti (mascherati) sono in grigio (in rosso tenue con la colormap in scala di grigi). La scala di colori e' COMUNE a tutti i file (salvo --own-scale), cosi'
 i colori sono confrontabili; lo stesso per l'asse y delle serie temporali (salvo --own-scale).
 Serie temporale: somma dei canali attivi / sqrt(numero di canali) per campione, mediata sul bin di tempo e
 espressa in S/N per bin (rumore bianco atteso = 1). A destra di ogni spettro dinamico, lo spettro: media su
@@ -108,6 +108,8 @@ def main(argv=None):
     p.add_argument("--vmax", type=float, default=None,
                    help="scala di colori simmetrica +-vmax [sigma] (default: percentile 99.5 di |valori|, comune)")
     p.add_argument("--own-scale", action="store_true", help="scala di colori e asse y separati per ogni file")
+    p.add_argument("--cmap", choices=["gray", "viridis", "RdBu_r"], default="gray",
+                   help="colormap: gray (scala di grigi, default), viridis, RdBu_r (blu-bianco-rosso)")
     p.add_argument("--width", type=float, default=14.0, help="larghezza della figura [pollici] (default 14)")
     p.add_argument("-o", "--out", default="dynspec_cmp.png")
     a = p.parse_args(argv)
@@ -141,8 +143,9 @@ def main(argv=None):
     vcommon = a.vmax or float(np.percentile(allv, 99.5))
     ycommon = (min(d[3].min() for d in data), max(d[3].max() for d in data))
     bcommon = (min(np.nanmin(d[7]) for d in data), max(np.nanmax(d[7]) for d in data))
-    cmap = matplotlib.colormaps["RdBu_r"].copy() if hasattr(matplotlib, "colormaps") else plt.get_cmap("RdBu_r")
-    cmap.set_bad("0.75")
+    cmap = matplotlib.colormaps[a.cmap].copy() if hasattr(matplotlib, "colormaps") else plt.get_cmap(a.cmap)
+    # canali mascherati: grigio chiaro con le colormap colorate, rosso tenue con quella in scala di grigi
+    cmap.set_bad("#f4c7c3" if a.cmap == "gray" else "0.75")
     for k, (t, fg, spec, tsb, tr, gdead, fb, band) in enumerate(data):
         a_ts, a_sp = ax[2 * k], ax[2 * k + 1]
         a_ts.step(t, tsb, where="mid", lw=0.8, color="k")
