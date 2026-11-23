@@ -191,7 +191,10 @@ fortemente correlato tra i canali: la serie a DM 0 a banda intera ha un rumore 4
 per canali indipendenti a 1 ms e 17 volte a 65 ms. Lo step 4, per ogni blocco di 4 s, normalizza i
 canali, calcola il modo comune m(t) (media su tutti i canali attivi), stima per regressione
 l'accoppiamento g_c di ogni canale (a 1 ms, con m calcolato senza il canale stesso) e sottrae g_c m(t).
-Mediana e sigma dei canali restano quelle dell'input, i canali mascherati restano identici.
+Il livello di ogni canale e' la sua media nel blocco, interpolata in modo continuo tra i blocchi: con la
+mediana (prima versione) la differenza media-mediana dei canali, tipica di dati interi con RFI positivo,
+veniva sottratta come uno scalino diverso per blocco e canale, visibile come strisce nello spettro
+dinamico. I canali mascherati restano identici.
 
 Va applicato **dopo** lo step 3: richiede canali normalizzati e mascherati (step 1) e azzera la serie a
 DM 0 su cui lavorano gli step 2 e 3 (che inoltre tolgono gli impulsi a banda parziale, che una

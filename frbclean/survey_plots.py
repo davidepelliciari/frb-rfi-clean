@@ -48,10 +48,15 @@ def make_all(out: Path, summary: dict, events, fb):
     # --- spettri dinamici ridotti
     med = np.median(d["chan_median"], 0)
     sig = np.median(d["chan_std"], 0)
-    sig = np.where(sig > 0, sig, 1)
+    # canali (quasi) costanti, cioe' mascherati: esclusi (dividere per una sigma ~0 darebbe valori enormi
+    # e spurii, che dominerebbero la scala dei colori)
+    dead = sig < 0.05 * np.median(sig[sig > 0]) if np.any(sig > 0) else np.ones_like(sig, bool)
+    sig = np.where(dead, 1, sig)
     dt = float(d["dyn_dt"])
     mean = (d["dyn_mean"] - med) / sig
     mx = (d["dyn_max"] - med) / sig
+    mean[:, dead] = np.nan
+    mx[:, dead] = np.nan
     order = np.argsort(freqs)
     ext = [0, mean.shape[0] * dt, freqs.min() - df / 2, freqs.max() + df / 2]
     fig, ax = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
@@ -59,11 +64,13 @@ def make_all(out: Path, summary: dict, events, fb):
                         (ax[1], mx, "massimo per bin (impulsi), in σ del canale")):
         z = img[:, order].T
         lo, hi = np.nanpercentile(z, [1, 99.5])
-        im = a.imshow(z, aspect="auto", origin="lower", extent=ext, vmin=lo, vmax=hi, cmap="viridis",
+        cmap = matplotlib.colormaps["viridis"].copy() if hasattr(matplotlib, "colormaps") else plt.get_cmap("viridis")
+        cmap.set_bad("0.75")
+        im = a.imshow(z, aspect="auto", origin="lower", extent=ext, vmin=lo, vmax=hi, cmap=cmap,
                       interpolation="nearest")
         fig.colorbar(im, ax=a, pad=0.01)
         a.set_ylabel("frequenza [MHz]")
-        a.set_title(lab, fontsize=9)
+        a.set_title(lab + " (grigio: canali mascherati)", fontsize=9)
     ax[0].set_title(title + "\n" + ax[0].get_title(), fontsize=9)
     ax[1].set_xlabel("tempo [s]")
     fig.tight_layout()

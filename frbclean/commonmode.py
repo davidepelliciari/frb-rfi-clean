@@ -1,11 +1,16 @@
 """
 Step 4: sottrazione del rumore di modo comune (segnale comune a tutti i canali).
 
-Modello, per ogni blocco di `block` secondi e per ogni canale attivo c, sui dati normalizzati
-z_c = (x_c - mediana_c) / sigma_c:
+Modello, per ogni canale attivo c, sui dati normalizzati z_c = (x_c - mu_c(t)) / sigma_c:
     z_c(t) = g_c m(t) + n_c(t)
 con m(t) la media di z su tutti i canali attivi (il modo comune) e g_c l'accoppiamento del canale.
-L'output e' z_c - g_c m(t), riportato alla scala del canale (stessa mediana e sigma dell'input).
+L'output e' x_c - sigma_c g_c m(t). Il livello mu_c(t) e' la MEDIA del canale nel blocco (`block`
+secondi), interpolata linearmente tra i centri dei blocchi vicini: con la media il modo comune ha media
+nulla, quindi la sottrazione non introduce offset (con la mediana, per dati interi o con RFI positivo,
+media e mediana differiscono e la differenza verrebbe sottratta come uno scalino diverso per blocco e
+canale); con l'interpolazione il livello e' continuo, quindi non ci sono scalini tra i blocchi. Le
+variazioni del modo comune piu' lente di qualche blocco restano nel livello mu_c(t) e quindi nei dati
+(Heimdall sottrae la linea di base); quelle piu' rapide vengono sottratte.
 
   * mode="regress" (default): g_c stimato per regressione di z_c su m nel blocco, a risoluzione
     `fit_res` (dove il modo comune domina sul rumore bianco), con m calcolato escludendo il canale
@@ -110,19 +115,53 @@ def run_commonmode(path, out, cfg: CommonModeConfig | None = None, verbose=True,
     items = [(k, (nsamp if k == "nsamples" else v)) for k, v in fb.items]
     gains, ex_before, ex_after, sp_before, sp_after, tblk = [], [], [], [], [], []
     last = 0.0
+    starts = list(range(0, nsamp, nper))
+
+    def stats(c0):
+        n = min(nper, nsamp - c0)
+        raw = fb.read(c0, n)
+        x = raw.astype(np.float32)
+        mu = x.mean(0, dtype=np.float64)
+        _, sig = _robust(x, max(1, n // 8192))
+        return dict(c0=c0, n=n, raw=raw, mu=mu, sig=sig, tc=c0 + n / 2.0)
+
+    def write(res):
+        if fb.nbits < 8:
+            fo.write(pack_bits(res.astype(np.uint8).ravel(), fb.nbits).tobytes())
+        else:
+            fo.write(res.tobytes())
+
     with open(out, "wb") as fo:
         fo.write(write_header(items))
-        for c0 in range(0, nsamp, nper):
-            n = min(nper, nsamp - c0)
-            raw = fb.read(c0, n)
-            x = raw.astype(np.float32)
-            med, sig = _robust(x, max(1, n // 8192))
+        prev, cur = None, stats(starts[0]) if starts else None
+        for ib in range(len(starts)):
+            nxt = stats(starts[ib + 1]) if ib + 1 < len(starts) else None
+            c0, n, raw, sig = cur["c0"], cur["n"], cur["raw"], cur["sig"]
             ok = live & (sig > 0)
             Nb = int(ok.sum())
             if Nb < 2 or n < 4 * r:
-                fo.write(raw.tobytes() if fb.nbits >= 8 else pack_bits(raw.astype(np.uint8).ravel(), fb.nbits).tobytes())
+                write(raw)
+                prev, cur = cur, nxt
                 continue
-            z = (x[:, ok] - med[ok]) / sig[ok]
+            # livello di ogni canale: media del blocco, interpolata linearmente tra i centri dei blocchi
+            # vicini (continua da un blocco all'altro). Con la media, e non la mediana, il modo comune ha
+            # media nulla e la sottrazione non introduce offset; con l'interpolazione non introduce scalini.
+            tt = c0 + np.arange(n) + 0.5
+            mu = np.empty((n, Nb), np.float32)
+            mc = cur["mu"][ok]
+            left, right = tt < cur["tc"], tt >= cur["tc"]
+            for side, nb in ((left, prev), (right, nxt)):
+                if not side.any():
+                    continue
+                if nb is None:
+                    mu[side] = mc
+                else:
+                    f = ((tt[side] - cur["tc"]) / (nb["tc"] - cur["tc"])).astype(np.float32)[:, None]
+                    mu[side] = mc + (nb["mu"][ok] - mc) * f
+            x = raw[:, ok].astype(np.float32)
+            s_ = sig[ok].astype(np.float32)
+            z = (x - mu) / s_
+            del mu
             m = z.mean(1)
             if cfg.mode == "zerodm":
                 g = np.ones(Nb, np.float32)
@@ -141,25 +180,24 @@ def run_commonmode(path, out, cfg: CommonModeConfig | None = None, verbose=True,
             ex_after.append(_excess(y.mean(1), Nb, r))
             sp_before.append(_split_excess(z, r))
             sp_after.append(_split_excess(y, r))
+            del z, y
             gfull = np.full(nch, np.nan, np.float32)
             gfull[ok] = g
             gains.append(gfull)
             tblk.append(c0 * ts)
-            outv = med[ok] + sig[ok] * y
+            outv = x - (s_ * g)[None, :] * m[:, None]
             if is_int:
                 outv = np.floor(outv + rng.random(outv.shape, dtype=np.float32)) if cfg.dither else np.rint(outv)
                 outv = np.clip(outv, lo, hi)
             res = raw.copy()
             res[:, ok] = outv.astype(raw.dtype)
-            if fb.nbits < 8:
-                fo.write(pack_bits(res.astype(np.uint8).ravel(), fb.nbits).tobytes())
-            else:
-                fo.write(res.tobytes())
+            write(res)
             if verbose and (time.time() - last > 30 or c0 + n >= nsamp):
                 last = time.time()
                 print(f"  t={(c0 + n) * ts:8.1f} s ({(c0 + n) / nsamp * 100:5.1f}%): eccesso di rumore a DM 0 "
                       f"(scala {cfg.fit_res * 1e3:g} ms) {ex_before[-1]:.2f} -> {ex_after[-1]:.2f}  "
                       f"({time.time() - t_start:.0f} s)", flush=True)
+            prev, cur = cur, nxt
     G = np.array(gains) if gains else np.zeros((0, nch))
     eb, ea = np.array(ex_before), np.array(ex_after)
     sb, sa = np.array(sp_before), np.array(sp_after)
