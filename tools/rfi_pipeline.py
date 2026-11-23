@@ -196,7 +196,10 @@ def main(argv=None):
         print(f"           fatto in {dt / 60:.1f} min. {fmt(k, s)}", flush=True)
         # l'input di questo step non serve piu' (se era un intermedio)
         if src != inp and not a.keep:
-            src.unlink(missing_ok=True)
+            try:
+                src.unlink()
+            except FileNotFoundError:
+                pass
         elif src != inp and a.keep:
             produced.append(src)
         src = dst
