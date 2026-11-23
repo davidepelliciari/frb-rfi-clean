@@ -11,7 +11,8 @@ finestra di riferimento di --ref secondi centrata sulla finestra mostrata, che c
 costanti (mascherati) sono in grigio. La scala di colori e' COMUNE a tutti i file (salvo --own-scale), cosi'
 i colori sono confrontabili; lo stesso per l'asse y delle serie temporali (salvo --own-scale).
 Serie temporale: somma dei canali attivi / sqrt(numero di canali) per campione, mediata sul bin di tempo e
-espressa in S/N per bin (rumore bianco atteso = 1).
+espressa in S/N per bin (rumore bianco atteso = 1). A destra di ogni spettro dinamico, lo spettro: media su
+tutta la finestra di ogni gruppo di canali, in S/N (rumore bianco atteso = 1), e la scala di colori.
 
 Risoluzione: --tres in ms; se e' piu' fine del campionamento si usa il campionamento (risoluzione massima).
 --nchan: numero di canali mostrati (gruppi di canali adiacenti mediati); non piu' dei canali del file.
@@ -84,8 +85,12 @@ def prepare(path, start, window, dm, tres, nchan, ref):
         # media dei canali attivi del gruppo, in sigma del singolo canale: rumore per bin 1/sqrt(n r)
         spec[:, j] = dd[:, gl].mean(1).reshape(-1, r).mean(1)
     fg = np.array([f[g].mean() for g in groups])
+    # spettro: media su tutta la finestra di ogni gruppo, in S/N (rumore bianco atteso = 1)
+    nlg = np.array([live[g].sum() for g in groups])
+    band = np.full(len(groups), np.nan)
+    band[~gdead] = spec[:, ~gdead].mean(0) * np.sqrt(nlg[~gdead] * n_show)
     t_ms = (np.arange(n_show // r) + 0.5) * r * ts * 1e3
-    return t_ms, fg, spec, ts_bin, r * ts * 1e3, gdead, fb
+    return t_ms, fg, spec, ts_bin, r * ts * 1e3, gdead, fb, band
 
 
 def main(argv=None):
@@ -118,17 +123,27 @@ def main(argv=None):
     hr = []
     for k in range(nf):
         hr += ([0.45] if k else []) + [1.0, 2.6]          # riga vuota tra un file e l'altro (per il titolo)
-    fig, axs = plt.subplots(len(hr), 1, figsize=(a.width, 3.6 * nf + 0.6), sharex=True,
-                            gridspec_kw=dict(height_ratios=hr, hspace=0.08))
-    for k in range(1, nf):
-        axs[3 * k - 1].set_visible(False)
-    ax = [x for i, x in enumerate(axs) if not (i % 3 == 2)]
+    fig = plt.figure(figsize=(a.width, 3.6 * nf + 0.6))
+    gs = fig.add_gridspec(len(hr), 3, height_ratios=hr, width_ratios=[1.0, 0.12, 0.015], hspace=0.08, wspace=0.02)
+    rows = [k * 3 for k in range(nf)]                     # riga della serie temporale di ogni file
+    ax, ax_band, ax_cb = [], [], []
+    for k, r0 in enumerate(rows):
+        a_ts = fig.add_subplot(gs[r0, 0], sharex=ax[0] if ax else None)
+        a_sp = fig.add_subplot(gs[r0 + 1, 0], sharex=a_ts)
+        a_bd = fig.add_subplot(gs[r0 + 1, 1], sharey=a_sp)
+        a_cb = fig.add_subplot(gs[r0 + 1, 2])
+        ax += [a_ts, a_sp]
+        ax_band.append(a_bd)
+        ax_cb.append(a_cb)
+    for x in ax[:-1]:
+        x.tick_params(labelbottom=False)
     allv = np.concatenate([np.abs(d[2][np.isfinite(d[2])]) for d in data])
     vcommon = a.vmax or float(np.percentile(allv, 99.5))
     ycommon = (min(d[3].min() for d in data), max(d[3].max() for d in data))
+    bcommon = (min(np.nanmin(d[7]) for d in data), max(np.nanmax(d[7]) for d in data))
     cmap = matplotlib.colormaps["RdBu_r"].copy() if hasattr(matplotlib, "colormaps") else plt.get_cmap("RdBu_r")
     cmap.set_bad("0.75")
-    for k, (t, fg, spec, tsb, tr, gdead, fb) in enumerate(data):
+    for k, (t, fg, spec, tsb, tr, gdead, fb, band) in enumerate(data):
         a_ts, a_sp = ax[2 * k], ax[2 * k + 1]
         a_ts.step(t, tsb, where="mid", lw=0.8, color="k")
         a_ts.axhline(0, color="0.6", lw=0.5)
@@ -143,8 +158,20 @@ def main(argv=None):
         im = a_sp.imshow(spec.T, aspect="auto", origin="upper", cmap=cmap, vmin=-v, vmax=v,
                          extent=[0, t[-1] + tr / 2, fg.min() - df / 2, fg.max() + df / 2], interpolation="nearest")
         a_sp.set_ylabel("frequenza [MHz]", fontsize=8)
-        cb = fig.colorbar(im, ax=[a_ts, a_sp], pad=0.01, fraction=0.025)
+        # spettro (media su tutta la finestra) a destra, con lo stesso asse delle frequenze
+        a_bd = ax_band[k]
+        ok = np.isfinite(band)
+        a_bd.step(band[ok], fg[ok], where="mid", lw=0.8, color="k")
+        a_bd.axvline(0, color="0.6", lw=0.5)
+        if not a.own_scale:
+            pad = 0.05 * (bcommon[1] - bcommon[0])
+            a_bd.set_xlim(bcommon[0] - pad, bcommon[1] + pad)
+        a_bd.tick_params(labelleft=False, labelsize=7)
+        a_bd.set_xlabel("S/N", fontsize=7)
+        a_bd.set_title("spettro", fontsize=8)
+        cb = fig.colorbar(im, cax=ax_cb[k])
         cb.set_label("media del gruppo di canali [σ del canale]", fontsize=7)
+        cb.ax.tick_params(labelsize=7)
     ax[-1].set_xlabel(f"tempo dall'inizio [ms]   (inizio = {a.start:.6f} s, al canale piu' alto)")
     ax[-1].set_xlim(0, data[0][0][-1] + tres_eff / 2)
     fig.savefig(a.out, dpi=120, bbox_inches="tight")

@@ -20,7 +20,7 @@ dati SIGPROC filterbank, prima della ricerca di FRB con Heimdall + FETCH.
 | `tools/rfi_impulses.py` | **step 3**: rimozione degli impulsi a DM 0 (radar, impulsi a banda intera o parziale) con veto di dispersione |
 | `tools/rfi_commonmode.py` | **step 4**: sottrazione del rumore di modo comune (segnale comune a tutti i canali), ultimo passo prima della ricerca |
 | `tools/plot_cand.py` | ispezione di un candidato dal filterbank (profilo, spettri dinamici dedisperso e a DM 0, piano DM-tempo), anche su piu' file affiancati |
-| `tools/plot_dynspec.py` | spettri dinamici e serie temporali di uno o piu' file, uno sotto l'altro con lo stesso asse dei tempi e la stessa scala di colori (DM, finestra, risoluzione, canali, inizio a scelta) |
+| `tools/plot_dynspec.py` | spettri dinamici, serie temporali e spettri di uno o piu' file, uno sotto l'altro con lo stesso asse dei tempi e la stessa scala di colori (DM, finestra, risoluzione, canali, inizio a scelta) |
 | `frbclean/` | pacchetto: I/O SIGPROC a blocchi (`sigproc.py`), survey (`survey.py`), step 1 (`clean.py`), step 2 (`periodic.py`), ricerca a singolo impulso semplificata per i test (`minisearch.py`) |
 | `docs/report_no0004/` | report LaTeX sull'osservazione ag278m_mc_no0004 e script di analisi riproducibile |
 
