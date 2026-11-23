@@ -9,7 +9,8 @@ Due comandi:
           *_all_candidates.csv, results_a.csv, *_all.cand) associa candidati e burst.
           Scrive MATCHED.csv (un burst per step per riga) e MATCHED_false.csv (falsi candidati
           per step: quelli selezionati dalla pipeline non associati ad alcun burst, divisi in "vicini" a un
-          burst iniettato, cioe' rilevamenti spuri di un burst forte, e "lontani").
+          burst iniettato, cioe' rilevamenti spuri o doppi di un burst, e "lontani"; i conteggi con FETCH
+          >= 0.5 e >= 0.7 sono dei soli falsi lontani).
 
   report  una o piu' realizzazioni: completezza per punto di ogni scansione (intervallo di Wilson
           al 68%), S/N recuperato / atteso, frazione classificata da FETCH, falsi candidati
@@ -193,12 +194,13 @@ def cmd_match(a):
         false_rows.append(dict(realization=a.realization, step=lab, n_selected=len(sel),
                                n_matched=int(used.sum()), n_false=int(fp.sum()),
                                n_false_near=int(np.sum(fp & near)), n_false_far=int(np.sum(fp & ~near)),
-                               n_false_fetch05=int(np.sum(fp & (pr >= 0.5))),
-                               n_false_fetch07=int(np.sum(fp & (pr >= 0.7))),
+                               n_false_fetch05=int(np.sum(fp & ~near & (pr >= 0.5))),
+                               n_false_fetch07=int(np.sum(fp & ~near & (pr >= 0.7))),
                                n_fetch07=int(np.sum(pr >= 0.7)), n_best_file=n_best,
                                n_raw=len(raw)))
         det = sum(1 for x in out_rows if x["step"] == lab and x["detected"])
-        msg = f"{lab:>8s}: rivelati {det}/{len(plan)}, falsi {int(fp.sum())} (FETCH>=0.7: {int(np.sum(fp & (pr >= 0.7)))})"
+        msg = (f"{lab:>8s}: rivelati {det}/{len(plan)}, falsi {int(fp.sum())} (lontani {int(np.sum(fp & ~near))}, "
+               f"di cui FETCH>=0.7: {int(np.sum(fp & ~near & (pr >= 0.7)))})")
         if dts:
             msg += (f"; scarti dt mediana {np.median(dts) * 1e3:+.2f} ms (p5..p95 {np.percentile(dts, 5) * 1e3:+.1f}.."
                     f"{np.percentile(dts, 95) * 1e3:+.1f}), dDM mediana {np.median(ddms):+.2f} "
@@ -296,7 +298,7 @@ def cmd_report(a):
             w.writerows(fl)
         print("Falsi candidati per file (selezionati dalla pipeline e non associati a un burst):")
         print(f"  {'realizz.':>8s} {'step':>8s} {'selez.':>7s} {'associati':>9s} {'falsi':>6s} {'vicini':>7s} "
-              f"{'lontani':>8s} {'falsi F>=0.5':>12s} {'falsi F>=0.7':>12s}")
+              f"{'lontani':>8s} {'lont. F>=0.5':>12s} {'lont. F>=0.7':>12s}")
         for r in fl:
             print(f"  {r['realization']:>8s} {r['step']:>8s} {r['n_selected']:>7s} {r['n_matched']:>9s} "
                   f"{r['n_false']:>6s} {r.get('n_false_near', ''):>7s} {r.get('n_false_far', ''):>8s} "
