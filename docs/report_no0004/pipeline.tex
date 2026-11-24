@@ -489,6 +489,8 @@ finestra. Grigio: canali mascherati. Ogni pannello ha la propria scala di colori
 \label{fig:final}
 \end{figure}
 
+\input{rfienv}
+
 % -------------------------------------------------------------------------------------
 \FloatBarrier
 \section{Discussione e prossimi passi}
@@ -510,6 +512,9 @@ banda stretta più lunghe di \SI{32}{\milli\second} e variazioni lente, che lo s
   \item Il numero di sottobande (16) è fisso: su bande strette andrebbe legato alla larghezza di banda o al numero di canali.
   \item Lo step 3 protegge 1221 eventi deboli (S/N mediano 7.5 a DM 0); il veto non è ancora tarato su dati reali.
   \item Il pilota ha 7 burst per punto e un solo file; lo step 4 vi è nella prima versione.
+  \item Il test su B0329+54 (Sez.~\ref{sec:b0329}) conferma su dati reali il limite larghezza/sweep: per una pulsar
+    con impulsi più larghi del proprio sweep lo step 3 conserva il 92\% del segnale e lo step 4 solo il 7\%. Con lo step 4
+    attivo, i burst larghi qualche millisecondo a DM sotto circa 50--100 vengono persi.
   \item Canali con RFI persistente a banda stretta (\SIrange{1438}{1440}{\mega\hertz}, \SI{1421}{\mega\hertz}) non sono
     mascherati: i tratti sostituiti li rendono più gaussiani degli altri canali, ma lasciano una piccola variabilità.
 \end{itemize}
@@ -526,5 +531,8 @@ banda stretta più lunghe di \SI{32}{\milli\second} e variazioni lente, che lo s
   \item Valutare un trattamento delle emissioni a banda stretta più lunghe di \SI{32}{\milli\second}.
   \item Prova su un'osservazione con un setup diverso, e sostituzione dei default legati alla geometria con valori derivati
     dall'header.
+  \item Per lo step 4: renderlo facoltativo, oppure eseguire la ricerca sia dopo lo step 3 sia dopo lo step 4 e unire i
+    candidati, oppure non sottrarre il modo comune dove contiene un segnale disperso; il ripiegamento di B0329+54 è il
+    test per valutarlo.
   \item Integrazione in \file{FRB_HF_Finder.py}, come per il ramo IQRM.
 \end{enumerate}
