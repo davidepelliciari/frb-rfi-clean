@@ -490,6 +490,7 @@ finestra. Grigio: canali mascherati. Ogni pannello ha la propria scala di colori
 \end{figure}
 
 \input{rfienv}
+\input{crabnoto}
 
 % -------------------------------------------------------------------------------------
 \FloatBarrier
@@ -503,12 +504,15 @@ pulizia aumenta anche la \emph{sensibilità}: i burst rivelati passano da 28 a 7
 step 4. I candidati che restano dopo lo step 3 sono una popolazione diversa: per il 42\% larghi $\geq\SI{4}{\milli\second}$,
 con DM mediano 167, e solo per il 37\% associati a un evento a DM 0 nel proprio sweep (per caso il 6\%). Sono emissioni a
 banda stretta più lunghe di \SI{32}{\milli\second} e variazioni lente, che lo step 3 non è progettato per trattare.
+Su un'osservazione indipendente (la Crab a Noto, Sez.~\ref{sec:crabnoto}), con un'altra antenna e un altro setup e con i
+valori di default, la pipeline completa (step 1--4) porta gli impulsi giganti rivelati da 28 a 43 (accettati da FETCH da
+13 a 30), ne migliora l'S/N in mediana del 17\% e dimezza i falsi candidati.
 
 \paragraph{Limiti.}
 \begin{itemize}
-  \item Una sola osservazione e un solo setup. L'ottimizzazione iterativa su un file potrebbe aver adattato la pipeline
-    a questi dati anche senza valori specifici; va verificata su almeno un altro dataset, idealmente della Croce del Nord
-    (banda stretta, frequenza bassa).
+  \item Sviluppo su una sola osservazione. Il test sulla Crab a Noto (1024 canali, \SI{4}{\micro\second},
+    \SI{256}{\mega\hertz}) mostra che i default funzionano anche su un altro setup; resta da provare un dataset a banda
+    stretta e frequenza bassa, come quelli della Croce del Nord.
   \item Il numero di sottobande (16) è fisso: su bande strette andrebbe legato alla larghezza di banda o al numero di canali.
   \item Lo step 3 protegge 1221 eventi deboli (S/N mediano 7.5 a DM 0); il veto non è ancora tarato su dati reali.
   \item Il pilota ha 7 burst per punto e un solo file; lo step 4 vi è nella prima versione.
@@ -529,10 +533,15 @@ banda stretta più lunghe di \SI{32}{\milli\second} e variazioni lente, che lo s
   \item Se i falsi larghi restano: guadagni dello step 4 interpolati tra i blocchi e sottrazione di più componenti correlate
     (2--3), misurandone il costo per gli FRB.
   \item Valutare un trattamento delle emissioni a banda stretta più lunghe di \SI{32}{\milli\second}.
-  \item Prova su un'osservazione con un setup diverso, e sostituzione dei default legati alla geometria con valori derivati
+  \item Sostituzione dei default legati alla geometria con valori derivati
     dall'header.
   \item Per lo step 4: renderlo facoltativo, oppure eseguire la ricerca sia dopo lo step 3 sia dopo lo step 4 e unire i
     candidati, oppure non sottrarre il modo comune dove contiene un segnale disperso; il ripiegamento di B0329+54 è il
     test per valutarlo.
+  \item Ripiegare la Crab di Noto al periodo misurato dagli impulsi giganti, dopo ogni step, per l'effetto sul segnale
+    medio.
+  \item Efficienza di FETCH in funzione dell'S/N: sulla Crab FETCH scarta gli impulsi veri sotto S/N circa 11--12; la
+    campagna di completezza la misura direttamente (rivelati con FETCH\,$\geq$\,0.5 e 0.7).
+  \item Velocità: \SI{4.7}{\hour} per un file di \SI{75}{\giga\byte}; per un uso sistematico serve parallelizzare.
   \item Integrazione in \file{FRB_HF_Finder.py}, come per il ramo IQRM.
 \end{enumerate}

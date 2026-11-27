@@ -1,0 +1,115 @@
+% -------------------------------------------------------------------------------------
+\FloatBarrier
+\section{Test su dati reali: la Crab osservata a Noto}
+\label{sec:crabnoto}
+
+Il test su B0329+54 (Sez.~\ref{sec:b0329}) riguarda un segnale lento e poco disperso, il caso sfavorevole per gli step 3 e
+4. La pulsar della Crab (B0531+21, DM 56.7) è il caso opposto e il più vicino a un FRB: emette \emph{impulsi giganti}
+singoli, stretti (decine di microsecondi) e fortemente dispersi. Il test usa anche un'antenna e un setup diversi da
+quelli su cui la pipeline è stata sviluppata, quindi verifica pure che i valori di default non siano adattati a Medicina.
+
+\subsection{Dati e pulizia}
+Il file \file{n0325e_nt_no0005_IFall_vdif_pol2.fil} (Noto, 18 febbraio 2025) ha 1024 canali da \SI{0.25}{\mega\hertz}
+(\SIrange{1350}{1606}{\mega\hertz}), campionamento di \SI{4}{\micro\second}, 8 bit e \SI{294}{\second} di durata
+(\SI{75}{\giga\byte}). A DM 56.7 la dispersione attraversa la banda in circa \SI{38}{\milli\second}. La pipeline
+(\file{tools/rfi_pipeline.py}, step 1--4, opzioni di default) ha impiegato \SI{4.7}{\hour}:
+\begin{itemize}
+  \item \textbf{step 1}: 100 canali mascherati, soprattutto il blocco \SIrange{1453}{1471}{\mega\hertz} (canali
+    540--611, curtosi alta: RFI impulsivo), una ventina di canali a \SIrange{1521}{1563}{\mega\hertz} e alcuni a
+    \SIrange{1364}{1382}{\mega\hertz}; 171 salti di guadagno; 0.03\% delle celle sostituite;
+  \item \textbf{step 2}: una famiglia periodica a \SI{12.5}{\hertz} con 44 armoniche, sottratta;
+  \item \textbf{step 3}: 9599 impulsi a DM 0, tutti rimossi, nessuno protetto; 1.7\% dei dati sostituiti;
+  \item \textbf{step 4}: eccesso di rumore a DM 0 da 3.55 a 0.19 (a Medicina era 4.4--4.7), guadagno mediano 0.92.
+    L'eccesso della differenza tra le due metà della banda resta 2.1: anche qui una parte della correlazione non è
+    descritta da un solo modo comune.
+\end{itemize}
+
+\subsection{Impulsi giganti}
+Il file originale e quello pulito sono stati cercati con \file{FRB_HF_Finder.py} (Heimdall + FETCH, DM 25--700,
+soglia S/N 8, boxcar fino a 8192 campioni, modello \file{a}).
+
+\paragraph{Identificazione dalla fase.} Per riconoscere gli impulsi giganti senza dipendere dalle soglie si usa la
+periodicità della pulsar. I 30 candidati del file pulito con DM $56.72\pm0.2$ e FETCH\,$\geq$\,0.5 sono stati ripiegati
+in tempo su una griglia di periodi (\SIrange{33.80}{33.88}{\milli\second}), massimizzando la statistica $Z^2_5$. Il
+periodo topocentrico che li mette in fase è $P=\SI{33.84143}{\milli\second}$ ($Z^2_5=257$, contro 13 in mediana sulla
+griglia): con questo periodo 28 impulsi cadono entro $\pm0.015$ in fase (impulso principale) e 2 a $+0.40$
+(interimpulso), come atteso per la Crab (Fig.~\ref{fig:crabnoto}, a sinistra). Il periodo baricentrico corrispondente,
+circa \SI{33.838}{\milli\second}, è coerente con la rotazione della Crab estrapolata a febbraio 2025.
+\ipotesi{Il confronto con l'effemeride usa valori di frequenza e derivata citati a memoria; va verificato con
+l'effemeride mensile di Jodrell Bank.} Si conta come impulso gigante ogni candidato con DM entro 1 da 56.72 e fase
+entro 0.03 dall'impulso principale o dall'interimpulso: a quella DM, fuori fase, c'è un solo candidato per file.
+
+\begin{table}[ht]
+\centering
+\caption{Ricerca con \file{FRB_HF_Finder.py} sul file originale e su quello pulito (step 1--4).}
+\label{tab:crabnoto}
+\small
+\begin{tabular}{lcc}
+\toprule
+ & originale & pulito \\
+\midrule
+candidati Heimdall (DM 25--700) & 575 & 338 \\
+impulsi giganti (in fase, DM $56.72\pm1$) & 28 & \textbf{43} \\
+\quad di cui con FETCH\,$\geq$\,0.5 & 13 & \textbf{30} \\
+candidati che non sono la Crab & 547 & 295 \\
+\quad a DM 25--50 & 124 & 55 \\
+\quad con boxcar $\geq2^{12}$ campioni & 157 & 263 \\
+\quad con FETCH\,$\geq$\,0.5 & 0 & 0 \\
+\midrule
+impulsi giganti in comune & \multicolumn{2}{c}{26} \\
+S/N pulito / originale (mediana; intervallo) & \multicolumn{2}{c}{1.17;\; 0.91--2.06} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Risultati} (Tab.~\ref{tab:crabnoto}, Fig.~\ref{fig:crabnoto}).
+\begin{itemize}
+  \item \textbf{Più impulsi rivelati.} Gli impulsi giganti passano da 28 a 43, quelli accettati da FETCH da 13 a 30.
+    Dei 28 dell'originale, 26 sono trovati anche nel file pulito; i 2 persi sono vicini alla soglia (S/N 8.3--8.4) e
+    FETCH li scartava già. Dopo la pulizia compaiono 17 impulsi nuovi.
+  \item \textbf{Nessuna perdita di segnale.} Per i 26 impulsi in comune l'S/N migliora in mediana del 17\%, senza casi
+    di perdita significativa (minimo 0.91). Lo step 3 non ha protetto nessun evento e non ha comunque toccato gli
+    impulsi: lo sweep di \SI{38}{\milli\second} li distingue nettamente dall'RFI a DM 0. Anche lo step 4, che perde
+    circa larghezza/sweep del segnale (Sez.~\ref{sec:step4}), qui perde meno dell'1\%. È la verifica complementare a
+    B0329+54: su segnali stretti e dispersi, cioè su FRB tipici, la pipeline conserva il segnale e riduce il rumore.
+  \item \textbf{FETCH.} Nell'originale FETCH scartava anche impulsi forti (S/N 12.1 a \SI{67.4}{\second}, 18.3 a
+    \SI{204.2}{\second} con probabilità 0.44), probabilmente perché l'RFI nelle immagini lo confondeva; nel file pulito
+    li accetta. Restano scartati 13 impulsi veri, tutti con S/N fra 8.1 e 11.6 e quasi sempre con probabilità sotto
+    0.05: vicino alla soglia FETCH non riconosce il segnale. Con FETCH a 0.7 la ricerca è quindi di fatto completa solo
+    sopra S/N circa 11--12, non dalla soglia di Heimdall.
+  \item \textbf{Falsi candidati.} I candidati che non sono la Crab si dimezzano (da 547 a 295); a DM 25--50 calano da
+    124 a 55. Nel file pulito sono quasi tutti (263) con boxcar di $2^{12}$--$2^{13}$ campioni, al limite di Heimdall:
+    la stessa popolazione vista a Medicina anche nel file di solo rumore (Sez.~\ref{sec:completeness}). Nell'originale
+    c'erano molti più candidati con larghezze intermedie, dovuti all'RFI. Nessun falso positivo FETCH in entrambi i casi.
+\end{itemize}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/pipeline/crab_noto_gp.png}
+\caption{Crab a Noto, ricerca con \file{FRB_HF_Finder.py} sul file originale (rosso) e pulito (blu). Sinistra: fase
+dei candidati a DM 55.7--57.7 per $P=\SI{33.84143}{\milli\second}$ (in grigio le finestre dell'impulso principale e
+dell'interimpulso); la dimensione è proporzionale all'S/N. Centro: S/N degli impulsi giganti nel file pulito rispetto
+all'originale, con la classificazione FETCH ($\geq0.5$) nei due file; i triangoli a sinistra sono gli impulsi trovati
+solo nel file pulito. Destra: tutti i candidati Heimdall nel piano tempo--DM.}
+\label{fig:crabnoto}
+\end{figure}
+
+\subsection{Ripiegamento e ricerca a singolo impulso con PRESTO}
+\sloppy
+\begin{itemize}
+  \item \textbf{Ripiegamento.} I ripiegamenti con \file{prepfold -psr B0531+21} non mostrano la pulsar in nessuno step.
+    Il periodo dato dall'effemeride di TEMPO, \SI{33.84828}{\milli\second}, differisce da quello misurato dagli impulsi
+    giganti di \SI{0.0069}{\milli\second} ($2\times10^{-4}$): in \SI{294}{\second} la fase scivola di circa 1.8 giri e
+    il profilo si appiattisce. Il parfile usato non è aggiornato: per la Crab, con forte rumore di timing e glitch,
+    serve l'effemeride mensile. Il ripiegamento con ricerca in periodo sull'originale ($\chi^2_{\rm red}=47$) e quello a
+    parametri fissi ($\chi^2_{\rm red}=15.8$) sono dominati dall'RFI: il primo converge a
+    $\dot P=\num{-1.3e-7}$, non fisico, e il secondo scende a $\chi^2_{\rm red}\simeq1.5$ sia con la maschera di
+    \file{rfifind} sia dopo lo step 1. \ipotesi{Il ripiegamento al periodo degli impulsi giganti, in corso, misurerà
+    l'effetto di ogni step sul segnale medio con lo stesso metodo di B0329+54.}
+  \item \textbf{Ricerca a singolo impulso.} Con \file{prepsubband} (DM 30--85, passo 1) e \file{single_pulse_search.py}
+    gli eventi passano da 6227 (5260 a DM\,$<$\,50) nell'originale a 111 (27 a DM\,$<$\,50) nel file pulito. Gli
+    impulsi giganti sono trovati però con S/N basso (massimo 9.4): con \SI{256}{\mega\hertz} di banda un errore di 0.5
+    in DM sbava l'impulso di circa \SI{0.3}{\milli\second}, contro una durata di circa \SI{0.05}{\milli\second}. Per un
+    confronto equo serve un passo di circa 0.05 attorno a DM 56.7.
+\end{itemize}
+\fussy
