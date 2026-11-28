@@ -94,6 +94,33 @@ solo nel file pulito. Destra: tutti i candidati Heimdall nel piano tempo--DM.}
 \label{fig:crabnoto}
 \end{figure}
 
+\subsection{Un impulso gigante prima e dopo la pulizia}
+La Fig.~\ref{fig:crabgp} mostra, con \file{tools/plot_dynspec.py}, \SI{120}{\milli\second} attorno all'impulso gigante
+più forte (\SI{97.474}{\second}, S/N 47.6), a DM 0, nel file originale e dopo lo step 4, con la stessa scala di colori.
+\begin{itemize}
+  \item \textbf{Originale.} La serie a DM 0 è dominata dai lampi della banda \SIrange{1445}{1480}{\mega\hertz} (a circa
+    20, 30, 40 e \SI{100}{\milli\second}, alti 2--3 conteggi), che nello spettro dinamico sono blocchi chiari; nella
+    stessa banda strisce verticali fitte alternano livelli alti e bassi. Lo spettro medio mostra le portanti a
+    \SIrange{1525}{1555}{\mega\hertz} e la depressione del bandpass a \SIrange{1453}{1471}{\mega\hertz}. L'impulso
+    gigante è la traccia diagonale debole da circa \SI{55}{\milli\second} (\SI{1606}{\mega\hertz}) a circa
+    \SI{92}{\milli\second} (\SI{1350}{\mega\hertz}); nella serie a DM 0 non si vede.
+  \item \textbf{Dopo lo step 4.} La serie a DM 0 è piatta, lo spettro medio è piatto, i lampi e le portanti sono
+    spariti, il blocco \SIrange{1453}{1471}{\mega\hertz} e i canali a \SI{1381}{\mega\hertz} sono mascherati (rosa).
+    La traccia dell'impulso gigante resta intatta ed è ora la struttura più evidente del pannello.
+\end{itemize}
+È l'illustrazione diretta di quanto misurato con la ricerca: la pulizia rimuove l'RFI a DM 0 e il rumore comune senza
+toccare un segnale stretto e disperso.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/noto/crab_gp97_dm0.png}
+\caption{L'impulso gigante più forte della Crab a Noto (\SI{97.474}{\second}, DM 56.7, S/N 47.6), a DM 0, nel file
+originale (sopra) e dopo lo step 4 (sotto): \SI{120}{\milli\second} da \SI{97.42}{\second}, risoluzione
+\SI{0.1}{\milli\second}, 256 canali, stessa scala di colori in conteggi. Per ciascun file: serie temporale, spettro
+dinamico e spettro medio sulla finestra. Rosa: canali mascherati.}
+\label{fig:crabgp}
+\end{figure}
+
 \subsection{Ripiegamento e ricerca a singolo impulso con PRESTO}
 \sloppy
 \begin{itemize}
@@ -104,8 +131,21 @@ solo nel file pulito. Destra: tutti i candidati Heimdall nel piano tempo--DM.}
     serve l'effemeride mensile. Il ripiegamento con ricerca in periodo sull'originale ($\chi^2_{\rm red}=47$) e quello a
     parametri fissi ($\chi^2_{\rm red}=15.8$) sono dominati dall'RFI: il primo converge a
     $\dot P=\num{-1.3e-7}$, non fisico, e il secondo scende a $\chi^2_{\rm red}\simeq1.5$ sia con la maschera di
-    \file{rfifind} sia dopo lo step 1. \ipotesi{Il ripiegamento al periodo degli impulsi giganti, in corso, misurerà
-    l'effetto di ogni step sul segnale medio con lo stesso metodo di B0329+54.}
+    \file{rfifind} sia dopo lo step 1.
+  \item \textbf{Ripiegamento al periodo degli impulsi giganti.} Il periodo ricavato dagli impulsi giganti è
+    topocentrico, mentre \file{prepfold -p} lo interpreta come baricentrico se l'header contiene le coordinate: serve
+    l'opzione \file{-topo}. Con \file{-topo -nosearch}, $P=\SI{33.841426}{\milli\second}$, DM 56.72 e 128 intervalli,
+    la Crab compare negli step 1, 2 e 3: un impulso stretto (un intervallo, \SI{0.26}{\milli\second}) alla stessa fase
+    degli impulsi giganti, con un rilievo a DM\,$\simeq$\,56.7 nella curva DM. L'impulso in un solo intervallo
+    conferma il periodo entro circa \SI{3e-5}{\milli\second}. \ipotesi{La misura dell'S/N del profilo per ogni step,
+    con lo stesso metodo di B0329+54, è in corso.}
+  \item \textbf{Un picco spurio vicino al periodo della Crab.} Dopo lo step 1 la curva $\chi^2$--periodo di
+    \file{prepfold} ha un picco a $P\simeq\SI{33.8459}{\milli\second}$, più alto di quello della pulsar; dopo lo step 2
+    scompare e resta solo il picco della Crab. È la famiglia periodica a \SI{12.5}{\hertz} sottratta dallo step 2: la
+    sua 26ª armonica (\SI{325}{\hertz}, presente fra le righe trovate) coincide con l'11ª armonica della frequenza di
+    ripiegamento, $12.5\times26/11=\SI{29.5454}{\hertz}$, cioè $P=\SI{33.8462}{\milli\second}$. Non è una coincidenza
+    fisica: in una finestra di ricerca stretta, attorno a qualunque periodo, qualche armonica di un treno ricco di
+    armoniche trova un'armonica del ripiegamento. Senza lo step 2 una ricerca in periodo si sarebbe agganciata all'RFI.
   \item \textbf{Ricerca a singolo impulso.} Con \file{prepsubband} (DM 30--85, passo 1) e \file{single_pulse_search.py}
     gli eventi passano da 6227 (5260 a DM\,$<$\,50) nell'originale a 111 (27 a DM\,$<$\,50) nel file pulito. Gli
     impulsi giganti sono trovati però con S/N basso (massimo 9.4): con \SI{256}{\mega\hertz} di banda un errore di 0.5
@@ -113,3 +153,101 @@ solo nel file pulito. Destra: tutti i candidati Heimdall nel piano tempo--DM.}
     confronto equo serve un passo di circa 0.05 attorno a DM 56.7.
 \end{itemize}
 \fussy
+
+% -------------------------------------------------------------------------------------
+\subsection{L'ambiente RFI di Noto in banda L}
+\label{sec:notoenv}
+Il file originale e quello pulito sono stati analizzati con \file{tools/rfi_survey.py} (opzioni di default, con lo
+spettro di potenza della serie a DM 0 alla risoluzione nativa, fino a \SI{125}{\kilo\hertz}). È una sola osservazione di
+\SI{294}{\second}: il quadro è indicativo, e le identificazioni delle sorgenti sono ipotesi.
+
+\paragraph{Cosa contiene il file originale} (Figg.~\ref{fig:notodyn} e \ref{fig:notospec}).
+\begin{itemize}
+  \item \textbf{Banda \SIrange{1445}{1495}{\mega\hertz}: la sorgente dominante.} Lampi di qualche secondo, a gruppi,
+    per tutta l'osservazione, alternati a fasi in cui il livello scende sotto la mediana. Le stesse fasi producono le
+    cadute verso il basso della serie a DM 0 (fino a circa $-8\%$ della potenza totale, a
+    \SIrange{130}{160}{\second} e \SIrange{205}{265}{\second}). Nella stessa banda, a \SIrange{1478}{1494}{\mega\hertz},
+    c'è un treno di impulsi larghi \SI{0.5}{\milli\second} a \SI{12.5}{\hertz} (4435 eventi, statistica di Rayleigh
+    $Z=2408$), la famiglia sottratta dallo step 2. \ipotesi{\SIrange{1452}{1492}{\mega\hertz} è la banda europea della
+    telefonia mobile in sola discesa (SDL): un segnale digitale a trame regolari è compatibile. La discesa del livello
+    all'arrivo di un segnale forte fa pensare a un controllo automatico del guadagno nel ricevitore o nel backend.}
+  \item \textbf{Banda \SIrange{1505}{1575}{\mega\hertz}.} Portanti strette persistenti a \SIrange{1525}{1555}{\mega\hertz},
+    con molti valori estremi e livello molto variabile, e una struttura lenta e larga: fra circa 150 e
+    \SI{230}{\second} il livello di tutta la banda scende per circa \SI{80}{\second}. \ipotesi{\SIrange{1525}{1559}{\mega\hertz}
+    è la banda di discesa dei satelliti per comunicazioni mobili (per esempio Inmarsat).}
+  \item \textbf{Portante a \SI{1437}{\mega\hertz}}, stretta e intermittente (\SIrange{8}{70}{\second} e
+    \SIrange{190}{250}{\second}).
+  \item \textbf{Righe periodiche.} Oltre a \SI{12.5}{\hertz}, righe a 2, 9.5 e \SI{33.3}{\hertz}; nel kHz una famiglia
+    a multipli di \SI{2}{\kilo\hertz} (armoniche di \SI{200}{\hertz} fino a \SI{12}{\kilo\hertz}) e righe isolate a 22,
+    42, 46, 50, \SI{52}{\kilo\hertz} e oltre, 60 in tutto. \ipotesi{Righe di questo tipo sono tipiche di elettronica
+    locale (alimentatori, clock digitali).}
+  \item \textbf{Eventi impulsivi a DM 0.} 7623, quasi tutti in una sola sottobanda: 7620 colpiscono al più il 25\% della
+    banda, nessuno più del 75\%. S/N massimo 35; 106 eventi con S/N\,$\geq$\,20.
+  \item \textbf{Bandpass e guadagno.} Il bandpass è già piatto in ingresso (circa 123 conteggi): il backend equalizza
+    la banda, e la sua forma reale non è ricostruibile. 171 salti di guadagno, a intervalli irregolari.
+\end{itemize}
+
+\begin{table}[ht]
+\centering
+\caption{Ambiente RFI in banda L: Medicina (Sez.~\ref{sec:rfienv}) e Noto (questa sezione).}
+\label{tab:notoenv}
+\small
+\begin{tabular}{p{4.2cm}p{4.6cm}p{5.4cm}}
+\toprule
+ & Medicina & Noto \\
+\midrule
+radar a banda larga & due, periodo \SI{10}{\second}, dominanti & nessun evento a banda larga \\
+rete elettrica & famiglia a \SI{50}{\hertz} & non evidente \\
+treni periodici & \SI{1.987}{\hertz} & \SI{12.5}{\hertz}, impulsi da \SI{0.5}{\milli\second} a \SIrange{1478}{1494}{\mega\hertz} \\
+righe nel kHz & -- & famiglia a \SI{2}{\kilo\hertz}, righe a \SIrange{22}{52}{\kilo\hertz} \\
+RFI in banda & \SIrange{1438}{1440}{\mega\hertz}, \SI{1421}{\mega\hertz} & \SIrange{1445}{1495}{\mega\hertz} (forte),
+  \SIrange{1525}{1555}{\mega\hertz}, \SI{1437}{\mega\hertz} \\
+eccesso di rumore a DM 0 & 4.4--4.7 & 3.5 (2.5--5.0 fra i blocchi) \\
+salti di guadagno & circa ogni \SI{1}{\second} & 171 in \SI{294}{\second}, irregolari \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Confronto con Medicina} (Tab.~\ref{tab:notoenv}). L'RFI di Noto è soprattutto a banda stretta e
+compatibile con servizi di telecomunicazione; a Medicina dominano radar e disturbi locali a banda larga. Il rumore
+correlato fra i canali c'è in entrambi i siti, a Noto un po' minore, e anche qui la differenza fra le due metà della
+banda (eccesso 2.1) non è descritta da un solo modo comune.
+
+\paragraph{Dopo la pipeline} (Fig.~\ref{fig:notodyn}, sotto). Spariscono il treno a \SI{12.5}{\hertz} (Rayleigh da
+1619 a 2.6 su tutti gli eventi), quasi tutte le righe dello spettro (da 60 a 2, al limite della soglia: \SI{2125.85}{\hertz}
+e \SI{91.56}{\kilo\hertz}, quest'ultima con periodo di 2.7 campioni, sotto il minimo dello step 2) e gli eventi forti
+(S/N\,$\geq$\,20 da 106 a 0, S/N\,$\geq$\,10 da 2000 a 149). Restano:
+\begin{itemize}
+  \item i \textbf{bordi del blocco mascherato}, \SIrange{1446}{1452}{\mega\hertz} e \SIrange{1472}{1480}{\mega\hertz}: i
+    lampi vi sono ancora visibili nel pannello del massimo, e lo step 4 vi trova i guadagni più alti (1.6--1.9 contro
+    0.92 in mediana);
+  \item impulsi deboli non periodici a \SIrange{1414}{1430}{\mega\hertz} (863 eventi);
+  \item le portanti a \SIrange{1525}{1555}{\mega\hertz} e la struttura lenta a \SIrange{1505}{1575}{\mega\hertz}.
+\end{itemize}
+Sono due limiti dello step 1. (1) Il rumore di ogni canale è confrontato con la mediana dei circa 32 canali vicini: se
+un blocco di RFI è largo quanto metà di questa finestra, il riferimento è contaminato e i canali ai bordi sembrano
+normali. (2) Ogni canale è riassunto dalla \emph{mediana nel tempo} delle sue statistiche: un RFI presente in meno di
+metà dei blocchi non la sposta, per quanto sia forte. I rimedi, che usano statistiche già calcolate, sono un secondo
+passaggio della maschera con i riferimenti ricalcolati senza i canali già mascherati e un criterio per l'RFI
+intermittente (un percentile alto nel tempo invece della mediana, o la variabilità del livello fra i blocchi). Va
+evitato di mascherare la riga dell'idrogeno a \SI{1420.4}{\mega\hertz}, forte in direzione della Crab, che non è RFI.
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=\textwidth]{fig/noto/survey_orig_dynspec.png}\\[2mm]
+\includegraphics[width=\textwidth]{fig/noto/survey_clean_dynspec.png}
+\caption{Censimento di Noto (\file{rfi_survey.py}): spettri dinamici di tutta l'osservazione (\SI{294}{\second},
+intervalli di \SI{0.147}{\second}), in unità della $\sigma$ di ciascun canale, nel file originale (sopra) e dopo gli
+step 1--4 (sotto). Per ciascuno: media per intervallo (variazioni di livello) e massimo per intervallo (impulsi).
+Grigio: canali mascherati.}
+\label{fig:notodyn}
+\end{figure}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\textwidth]{fig/noto/survey_orig_spectrum.png}
+\caption{Spettro di potenza della serie a DM 0 del file originale di Noto (risoluzione \SI{0.24}{\hertz}, fino a
+\SI{125}{\kilo\hertz}): spettro e continuo, spettro normalizzato al continuo con le righe più forti, righe per
+sottobanda. Dopo la pipeline restano 2 righe al limite della soglia.}
+\label{fig:notospec}
+\end{figure}
