@@ -137,8 +137,8 @@ dinamico e spettro medio sulla finestra. Rosa: canali mascherati.}
     l'opzione \file{-topo}. Con \file{-topo -nosearch}, $P=\SI{33.841426}{\milli\second}$, DM 56.72 e 128 intervalli,
     la Crab compare negli step 1, 2 e 3: un impulso stretto (un intervallo, \SI{0.26}{\milli\second}) alla stessa fase
     degli impulsi giganti, con un rilievo a DM\,$\simeq$\,56.7 nella curva DM. L'impulso in un solo intervallo
-    conferma il periodo entro circa \SI{3e-5}{\milli\second}. \ipotesi{La misura dell'S/N del profilo per ogni step,
-    con lo stesso metodo di B0329+54, è in corso.}
+    conferma il periodo entro circa \SI{3e-5}{\milli\second}. La misura dell'S/N del profilo per ogni step è nella
+    Tab.~\ref{tab:crabprof} e nella Fig.~\ref{fig:crabprof}.
   \item \textbf{Un picco spurio vicino al periodo della Crab.} Dopo lo step 1 la curva $\chi^2$--periodo di
     \file{prepfold} ha un picco a $P\simeq\SI{33.8459}{\milli\second}$, più alto di quello della pulsar; dopo lo step 2
     scompare e resta solo il picco della Crab. È la famiglia periodica a \SI{12.5}{\hertz} sottratta dallo step 2: la
@@ -146,6 +146,24 @@ dinamico e spettro medio sulla finestra. Rosa: canali mascherati.}
     ripiegamento, $12.5\times26/11=\SI{29.5454}{\hertz}$, cioè $P=\SI{33.8462}{\milli\second}$. Non è una coincidenza
     fisica: in una finestra di ricerca stretta, attorno a qualunque periodo, qualche armonica di un treno ricco di
     armoniche trova un'armonica del ripiegamento. Senza lo step 2 una ricerca in periodo si sarebbe agganciata all'RFI.
+  \item \textbf{S/N del profilo per ogni step} (Tab.~\ref{tab:crabprof}, Fig.~\ref{fig:crabprof}). Stesso metodo di
+    B0329+54: segnale integrato sui 3 intervalli dell'impulso principale diviso il rumore robusto fuori impulso. Il
+    rumore è confrontato con quello bianco atteso da \file{prepfold} (\emph{Profile StdDev}, dalla deviazione standard
+    dei dati) e, per gli step 1--4, con quello radiometrico ($8\sqrt{924}\sqrt{N_{\rm campioni/bin}}$ conteggi).
+    \begin{itemize}
+      \item Nell'originale il profilo è dominato da variazioni lente dovute all'RFI (rumore 2.3 volte quello bianco):
+        S/N 4.4. La maschera di \file{rfifind} e lo step 1 lo portano a 9--10, con rumore vicino a quello bianco.
+      \item Gli step 1--3 conservano tutto il segnale (rapporto con lo step 2: 1.01, 1.00, 1.00), e lo step 4 anche
+        (0.996), come previsto per un impulso stretto (Sez.~\ref{sec:step4}); è l'opposto di B0329+54 (0.07).
+      \item Lo step 4 aumenta però leggermente il rumore del profilo (da 1.29 a 1.45 volte il radiometrico), e l'S/N
+        scende da 9.5 a 8.4. La differenza è al limite dell'incertezza della stima del rumore (circa 7\% con circa
+        110 intervalli fuori impulso). Qui il rumore del profilo è già vicino al radiometrico dopo lo step 1, quindi lo
+        step 4 non ha nulla da guadagnare sul ripiegamento; il suo guadagno è sulla ricerca a singolo impulso.
+      \item La maschera di \file{rfifind} dà sul ripiegamento lo stesso risultato della pipeline (9.7 contro 9.5--9.8):
+        per il segnale medio di una pulsar la differenza fra i due metodi è trascurabile. La differenza è negli impulsi
+        singoli (Tab.~\ref{tab:crabnoto}).
+      \item L'interimpulso non è rivelato (meno di 2$\sigma$ in tutti i file).
+    \end{itemize}
   \item \textbf{Ricerca a singolo impulso.} Con \file{prepsubband} (DM 30--85, passo 1) e \file{single_pulse_search.py}
     gli eventi passano da 6227 (5260 a DM\,$<$\,50) nell'originale a 111 (27 a DM\,$<$\,50) nel file pulito. Gli
     impulsi giganti sono trovati però con S/N basso (massimo 9.4): con \SI{256}{\mega\hertz} di banda un errore di 0.5
@@ -153,6 +171,37 @@ dinamico e spettro medio sulla finestra. Rosa: canali mascherati.}
     confronto equo serve un passo di circa 0.05 attorno a DM 56.7.
 \end{itemize}
 \fussy
+
+
+\begin{table}[ht]
+\centering
+\caption{Crab a Noto, ripiegamento a $P=\SI{33.841426}{\milli\second}$ (topocentrico), DM 56.72, 128 intervalli: S/N
+del profilo (impulso principale, 3 intervalli), rumore fuori impulso rispetto al bianco atteso da \file{prepfold} e al
+radiometrico, segnale integrato rispetto allo step 2.}
+\label{tab:crabprof}
+\small
+\begin{tabular}{lccccc}
+\toprule
+ & S/N del picco & S/N integrato & rumore / bianco & rumore / radiometrico & segnale / step 2 \\
+\midrule
+originale & 3.7 & 4.4 & 2.26 & -- & -- \\
+originale + \file{rfifind} & 8.7 & 9.7 & 1.02 & -- & -- \\
+step 1 & 7.8 & 9.1 & 1.14 & 1.37 & 1.01 \\
+step 2 & 8.6 & 9.8 & 1.04 & 1.25 & 1.00 \\
+step 3 & 8.3 & 9.5 & 1.08 & 1.29 & 1.00 \\
+step 4 & 7.4 & 8.4 & 1.21 & 1.45 & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.75\textwidth]{fig/noto/crab_profiles.png}
+\caption{Profili della Crab a Noto (\SI{294}{\second}, 128 intervalli) nel file originale, con la maschera di
+\file{rfifind} e dopo ogni step, ciascuno in unità del proprio rumore fuori impulso e sfalsati in verticale. In grigio la
+finestra dell'impulso principale usata per l'S/N.}
+\label{fig:crabprof}
+\end{figure}
 
 % -------------------------------------------------------------------------------------
 \subsection{L'ambiente RFI di Noto in banda L}
